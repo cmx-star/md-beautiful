@@ -1,0 +1,26 @@
+# Dependencies
+/node_modules/
+
+# Frontend build and test output
+/dist/
+/release/
+/coverage/
+*.tsbuildinfo
+
+# Tauri / Rust generated files
+/src-tauri/target/
+/src-tauri/gen/schemas/
+
+# Logs
+*.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+/.vscode/
+/.idea/
+.DS_Store
+Thumbs.db

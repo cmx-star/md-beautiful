@@ -1,0 +1,166 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  user-select: none;
+}
+
+#app {
+  height: 100vh;
+  width: 100vw;
+}
+
+@layer base {
+  :root {
+    --bg-primary: #fafafa;
+    --bg-secondary: #f5f5f5;
+    --bg-tertiary: #eaeaea;
+    --text-primary: #171717;
+    --text-secondary: #525252;
+    --text-tertiary: #737373;
+    --border-color: #e5e5e5;
+    --accent: #0ea5e9;
+    --accent-hover: #0284c7;
+    --surface-card: #ffffff;
+    --surface-hover: #f0f9ff;
+    --code-bg: #f5f5f5;
+    --scrollbar-thumb: #d4d4d4;
+    --scrollbar-track: transparent;
+  }
+
+  .dark {
+    --bg-primary: #0a0a0a;
+    --bg-secondary: #171717;
+    --bg-tertiary: #262626;
+    --text-primary: #fafafa;
+    --text-secondary: #a3a3a3;
+    --text-tertiary: #737373;
+    --border-color: #262626;
+    --accent: #38bdf8;
+    --accent-hover: #0ea5e9;
+    --surface-card: #171717;
+    --surface-hover: #0c4a6e;
+    --code-bg: #171717;
+    --scrollbar-thumb: #404040;
+    --scrollbar-track: transparent;
+  }
+}
+
+@layer components {
+  .scrollbar-thin::-webkit-scrollbar { width: 4px; height: 4px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 2px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+
+  .pane-divider {
+    @apply w-px cursor-col-resize transition-colors;
+    background-color: var(--border-color);
+  }
+}
+
+.cm-editor-custom {
+  height: 100%;
+}
+
+.cm-editor-custom .cm-editor {
+  height: 100%;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.cm-editor-custom .cm-scroller {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.cm-editor-custom .cm-content {
+  padding: 24px;
+  max-width: 72ch;
+  margin: 0 auto;
+}
+
+.cm-editor-custom .cm-gutters {
+  background: var(--surface-card);
+  border-right: 1px solid var(--border-color);
+  color: var(--text-tertiary);
+}
+
+.cm-editor-custom .cm-gutterElement {
+  background: transparent;
+  color: var(--text-tertiary);
+}
+
+.cm-editor-custom .cm-activeLine,
+.cm-editor-custom .cm-activeLineGutter {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.cm-editor-custom .cm-activeLineGutter {
+  color: var(--text-secondary);
+}
+
+aside {
+  overflow-x: hidden;
+}
+
+aside > .h-11:first-child {
+  height: 48px;
+  min-width: 0;
+  padding-left: 76px;
+  padding-right: 12px;
+}
+
+aside > .h-11:first-child span {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+aside .overflow-y-auto {
+  overflow-x: hidden;
+}
+
+aside .overflow-y-auto > button {
+  width: calc(100% - 0.5rem);
+  max-width: calc(100% - 0.5rem);
+}
+
+/* Markdown preview styles */
+.markdown-preview h1 { @apply text-3xl font-bold mb-4 pb-2; border-bottom: 1px solid var(--border-color); }
+.markdown-preview h2 { @apply text-2xl font-semibold mb-3 pb-1; border-bottom: 1px solid color-mix(in srgb, var(--border-color) 50%, transparent); }
+.markdown-preview h3 { @apply text-xl font-semibold mb-2; }
+.markdown-preview p { @apply mb-4 leading-relaxed; }
+.markdown-preview blockquote { @apply border-l-4 pl-4 my-4; border-left-color: var(--accent); opacity: 0.7; }
+.markdown-preview code { @apply px-1.5 py-0.5 rounded text-sm font-mono; background-color: var(--code-bg); }
+.markdown-preview pre { @apply rounded-lg p-4 my-4 overflow-x-auto; background-color: var(--code-bg); }
+.markdown-preview pre code { @apply bg-transparent p-0; }
+.markdown-preview ul { @apply list-disc pl-6 mb-4 space-y-1; }
+.markdown-preview ol { @apply list-decimal pl-6 mb-4 space-y-1; }
+.markdown-preview li { @apply leading-relaxed; }
+.markdown-preview a { @apply underline; color: var(--accent); }
+.markdown-preview a:hover { color: var(--accent-hover); }
+.markdown-preview img { @apply max-w-full rounded-lg my-4; }
+.markdown-preview table { @apply w-full border-collapse my-4; }
+.markdown-preview th, .markdown-preview td { @apply px-3 py-2 text-left; border: 1px solid var(--border-color); }
+.markdown-preview th { @apply font-semibold; background-color: var(--bg-secondary); }
+.markdown-preview hr { @apply my-6; border-top: 1px solid var(--border-color); }
+.markdown-preview input[type="checkbox"] { @apply mr-2; accent-color: var(--accent); }
+
+/* MathJax / QuickJS rendered formulas */
+.mjx-chtml { font-size: 1.1em !important; }
+mjx-container { display: block !important; overflow-x: auto; }
