@@ -1,11 +1,14 @@
 <template>
   <aside
-    class="flex-shrink-0 bg-[var(--surface-card)] border-r border-[var(--border-color)] flex flex-col transition-all duration-200"
+    class="sidebar-shell flex-shrink-0 bg-[var(--surface-card)] border-r border-[var(--border-color)] flex flex-col transition-all duration-200"
     :style="{ width: open ? '260px' : '0px', minWidth: open ? '260px' : '0px', overflow: 'hidden' }"
   >
     <!-- Header -->
-    <div class="h-11 flex items-center px-4 flex-shrink-0">
-      <span class="font-semibold text-sm tracking-tight text-[var(--text-primary)]" style="padding-right:0.15em">Mardown</span><span class="font-semibold text-sm tracking-tight text-[var(--accent)]">Beautiful</span>
+    <div class="sidebar-brand-shell flex-shrink-0">
+      <div class="sidebar-brand-card" aria-label="Mardown Beautiful">
+        <span class="font-semibold text-sm tracking-tight text-[var(--text-primary)]">Mardown</span>
+        <span class="font-semibold text-sm tracking-tight text-[var(--accent)]">Beautiful</span>
+      </div>
     </div>
 
     <!-- Search -->
@@ -38,7 +41,7 @@
     </div>
 
     <!-- Notes -->
-    <div class="flex-1 overflow-y-auto scrollbar-thin">
+    <div class="sidebar-notes-list flex-1 overflow-y-auto scrollbar-thin">
       <div class="px-3 py-1.5 border-b border-[var(--border-color)] flex items-center justify-between flex-shrink-0">
         <span class="text-[10px] text-[var(--text-tertiary)] uppercase tracking-wider">笔记 · {{ filteredNotes.length }}</span>
       </div>
@@ -49,7 +52,7 @@
         v-for="note in filteredNotes"
         :key="note.id"
         @click="selectNote(note.id)"
-        class="w-full text-left px-3 py-2.5 mx-1 rounded-md transition-all"
+        class="sidebar-note-item text-left px-3 py-2.5 rounded-md transition-all"
         :class="note.id === activeNoteId ? 'bg-[var(--surface-hover)] ring-1 ring-[var(--accent)]/30' : 'hover:bg-[var(--bg-secondary)]'"
       >
         <div class="flex items-start gap-2">

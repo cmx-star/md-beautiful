@@ -5,6 +5,7 @@
 /dist/
 /release/
 /coverage/
+/.playwright-cli/
 *.tsbuildinfo
 
 # Tauri / Rust generated files
