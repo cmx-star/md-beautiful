@@ -3,6 +3,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export interface FileInfo {
   name: string;
@@ -14,6 +15,18 @@ export interface FileFingerprint {
   path: string;
   mtime: number;
   size: number;
+}
+
+/**
+ * Payload pushed by the Rust watcher via the `vault://changed` event.
+ * The backend already filters migration artifacts (`.migration-backup-*`,
+ * `.migration-log.json`, `imported/.reverted-*`) and suppresses events
+ * caused by the app's own writes.
+ */
+export interface VaultChangeEvent {
+  path: string;
+  kind: 'created' | 'modified' | 'removed';
+  at: number;
 }
 
 export const vaultService = {
@@ -46,6 +59,26 @@ export const vaultService = {
   },
   async getDataDir(): Promise<string> {
     return invoke<string>('get_data_dir');
+  },
+  /**
+   * Close the current Vault: drops the Rust watcher, clears fingerprints
+   * and the sync baseline.  Safe to call when no vault is open.
+   */
+  async closeVault(): Promise<void> {
+    return invoke<void>('close_vault');
+  },
+  /**
+   * Subscribe to `vault://changed` events emitted by the Rust watcher.
+   * Returns an unlisten function — callers MUST call it during teardown
+   * to avoid leaking listeners.  The callback is invoked with the
+   * already-validated payload; migration artifacts and self-writes are
+   * filtered out on the Rust side so the frontend only sees real
+   * external changes.
+   */
+  async onChange(callback: (event: VaultChangeEvent) => void): Promise<UnlistenFn> {
+    return listen<VaultChangeEvent>('vault://changed', (event) => {
+      callback(event.payload);
+    });
   },
 };
 

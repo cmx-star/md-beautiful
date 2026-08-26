@@ -124,6 +124,23 @@ Vault 目录迁出后的结构：
 
 按钮均带 `aria-label`，键盘 / 屏幕阅读器友好。草稿键是读写时机的"防误丢"缓冲，不是数据库；它是 Phase 1-B 之前的最轻量保底。
 
+## 👀 外部修改检测（Phase 1-B）
+
+打开 Vault 时，Rust 端会用 [`notify`](https://crates.io/crates/notify) 启动一个递归监听，监听范围限定在 Vault 根目录。后端先把以下路径直接丢弃，避免给前端制造噪音：
+
+- `.migration-backup-*.json`、`imported/.reverted-*` — Pinia 笔记迁出过程中产生的快照与回滚目录
+- `.migration-log.json` — 迁移日志
+
+应用自身通过 `vault_write_file` / `vault_create_note` / `vault_rename_file` / `vault_delete_file` 写入的路径会进入 `pending_self_writes`，watcher 收到同 path 的 OS 事件时会吞掉不向前端推送。`close_vault`（或应用退出时）会 drop 句柄、清空 `fingerprints` / `sync_baseline`，不会有 leaked thread。
+
+前端通过 `vaultService.onChange(callback)` 订阅 `vault://changed` 事件，App.vue 的 handler 三种分支：
+
+- `created` / `removed` —— 静默刷新侧边栏 `noteStore.vaultFiles`，不打断用户
+- `modified` 且非当前 active note —— 静默刷新
+- `modified` 且**是**当前 active note —— 弹 `alertdialog` 提示，**绝不**静默覆盖；提供「重新载入」（走 `vault_read_file` 覆盖编辑器）和「保留我的编辑」（仅清提示）二选一按钮
+
+新增/修改/删除事件 payload 形如 `{ path: string, kind: 'created' | 'modified' | 'removed', at: number }`（`path` 是相对 Vault 根的 forward-slash 路径，`at` 是毫秒时间戳）。
+
 ## ☁️ 同步方案（开发中）
 
 ## ☁️ 同步方案（开发中）
@@ -154,7 +171,8 @@ Vault 目录迁出后的结构：
 |------|------|------|
 | Phase 0 — 基线校准与安全止血 | 文档修正 + HTML 清洗 + CSP 收紧 + 构建基线 | ✅ 已完成（基线校准与安全止血） |
 | Phase 1-A — Pinia 迁出 + 草稿恢复 + 快照回滚 | 一次性迁出到 Vault + 草稿键隔离 + 迁移日志 + 一键回滚 UI | ✅ 已完成（数据迁出与回滚） |
-| Phase 1 — 本地优先与数据安全 | Vault 打开/读取/编辑/保存/监听/恢复闭环 | 🔲 待开发（Phase 1-B：监听 + 附件） |
+| Phase 1-B — Vault 监听 + 外部修改检测 | `notify` 递归监听 + `vault://changed` 事件 + 自写去噪 + 迁移产物过滤 + active-note 弹 toast + `close_vault` | ✅ 已完成（外部修改检测） |
+| Phase 1-C — 附件导入 | 拖拽 / 粘贴 / 复制进 Vault 子目录 | 🔲 待开发 |
 | Phase 2 — 写作体验与 Markdown 兼容 | 编辑命令 + 渐进隐藏 + 三种视图模式 | 🔲 待开发 |
 | Phase 3 — 知识管理与索引 | 双向链接 + 标签 + 全文搜索 | 🔲 待开发 |
 | Phase 4 — 可靠同步与冲突中心 | GitLab/WebDAV 状态机 + 冲突处理 | 🔲 待开发 |
@@ -164,6 +182,8 @@ Vault 目录迁出后的结构：
 > Phase 0 验收包含：文档准确、构建基线、HTML 清洗回归、MathJax 本地化、CSP 收紧、Vault 路径边界单元测试、同步 UI 禁用。
 
 > Phase 1-A 验收包含：Pinia → Vault 一次性迁出 + Frontmatter 元数据 + `mardown-beautiful-drafts` 草稿键 + 迁移快照 `.migration-backup-<iso>.json` + 一键回滚到 `imported/.reverted-<iso>/` + 迁移日志 `.migration-log.json` + 命令面板「笔记数据」入口 + `aria-label` 草稿恢复对话框。
+
+> Phase 1-B 验收包含：`notify = "6"` 递归监听 Vault 根 + `vault://changed` Tauri 事件（`{path, kind, at}`）+ 自写去噪（`pending_self_writes`）+ 过滤迁移产物路径 + active-note 外部修改弹「重新载入/保留我的编辑」二选一 toast（绝不静默覆盖）+ `close_vault` 命令 drop 句柄 + 23 个 cargo 测试（含 2 个新 notification 测试）与 68 个 vitest 测试全绿。
 
 > 📌 **当前定位**：可交互桌面原型。Phase 1-A 起，Pinia 内置笔记数据一次性迁出到 Vault 根目录 `imported/`，本地 `.md` 文件即事实来源；UI 偏好仍存于 `mardown-beautiful-note-store`，草稿存于 `mardown-beautiful-drafts`，主题存于 `mardown-beautiful-theme`，互不干扰。
 

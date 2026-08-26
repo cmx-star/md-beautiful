@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 import { useNoteStore } from '@/stores/noteStore';
 import { useThemeStore } from '@/stores/themeStore';
 import { useSyncStore } from '@/stores/syncStore';
-import { vaultService } from '@/services/vaultService';
+import { vaultService, type VaultChangeEvent } from '@/services/vaultService';
 import { documentService } from '@/services/documentService';
 import { appLogger } from '@/services/logger';
 import { countMarkdownCharacters, deriveNoteTitle } from '@/utils/noteTitle';
@@ -31,6 +31,82 @@ const showDataSettings = shallowRef(false);
 const draftRecoveryPrompt = ref<Array<{ noteId: string; ageMs: number }>>([]);
 const vaultAdapter = shallowRef(createTauriVaultAdapter());
 const isMacOS = /Macintosh|Mac OS X/i.test(navigator.userAgent);
+const unlistenVaultChange = shallowRef<null | (() => void)>(null);
+const externalChangeToast = ref<{ noteId: string; path: string } | null>(null);
+
+function activeNotePath(): string | null {
+  const active = noteStore.getActiveNote();
+  if (!active) return null;
+  const source = active.source as { kind?: string; path?: string } | undefined;
+  if (source?.kind === 'vault' && typeof source.path === 'string') {
+    return source.path;
+  }
+  return null;
+}
+
+async function refreshVaultList() {
+  try {
+    const files = await vaultService.listFiles();
+    noteStore.setVaultFiles(files);
+  } catch (error) {
+    await appLogger.error('ui.vault_watch.refresh_failed', error);
+  }
+}
+
+async function handleVaultChange(event: VaultChangeEvent) {
+  await appLogger.info(
+    'ui.vault_watch.changed',
+    `path=${event.path} kind=${event.kind}`
+  );
+  if (event.kind === 'created' || event.kind === 'removed') {
+    // Silent refresh — nothing to confirm.
+    await refreshVaultList();
+    return;
+  }
+  // event.kind === 'modified'
+  const activePath = activeNotePath();
+  if (activePath && activePath === event.path) {
+    // Active note was modified externally — never silently overwrite.
+    const active = noteStore.getActiveNote();
+    if (active) {
+      externalChangeToast.value = { noteId: active.id, path: event.path };
+    } else {
+      await refreshVaultList();
+    }
+    return;
+  }
+  // Non-active file: silent refresh.
+  await refreshVaultList();
+}
+
+async function reloadActiveFromVault() {
+  const toast = externalChangeToast.value;
+  if (!toast) return;
+  const active = noteStore.getActiveNote();
+  if (!active || active.id !== toast.noteId) {
+    externalChangeToast.value = null;
+    return;
+  }
+  try {
+    const content = await vaultService.readFile(toast.path);
+    noteStore.updateNote(active.id, {
+      content,
+      wordCount: countMarkdownCharacters(content),
+      title: deriveNoteTitle(content, active.title),
+    });
+    await appLogger.info('ui.vault_watch.reloaded', `path=${toast.path}`);
+  } catch (error) {
+    await appLogger.error('ui.vault_watch.reload_failed', error);
+  } finally {
+    externalChangeToast.value = null;
+  }
+}
+
+function dismissExternalChangeToast() {
+  // User chose to keep their in-editor edits; just clear the prompt.
+  externalChangeToast.value = null;
+  void appLogger.info('ui.vault_watch.kept_local_edits');
+}
 
 function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value;
@@ -71,7 +147,14 @@ async function openVaultPicker() {
 async function openVault(root: string) {
   try {
     await appLogger.info('ui.vault_open.started');
+    // Drop any previous listener so re-opening a Vault doesn't double-fire.
+    if (unlistenVaultChange.value) {
+      unlistenVaultChange.value();
+      unlistenVaultChange.value = null;
+    }
     const files = await vaultService.openVault(root);
+    // Register the watcher handler for the freshly opened vault.
+    unlistenVaultChange.value = await vaultService.onChange(handleVaultChange);
     noteStore.setVaultRoot(root);
     noteStore.setVaultFiles(files);
     const notes = [];
@@ -284,6 +367,13 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown);
+  if (unlistenVaultChange.value) {
+    unlistenVaultChange.value();
+    unlistenVaultChange.value = null;
+  }
+  // Best-effort: ask the backend to drop its watcher.  Errors are
+  // swallowed because the window is already being torn down.
+  void vaultService.closeVault().catch(() => undefined);
 });
 </script>
 
@@ -383,6 +473,31 @@ onBeforeUnmount(() => {
           </button>
         </li>
       </ul>
+    </section>
+
+    <section
+      v-if="externalChangeToast"
+      class="external-change-toast"
+      role="alertdialog"
+      aria-label="外部修改了当前笔记"
+      data-testid="external-change-toast"
+    >
+      <p>外部修改了当前笔记：<code>{{ externalChangeToast.path }}</code></p>
+      <button
+        type="button"
+        :aria-label="`重新载入 ${externalChangeToast.path}`"
+        @click="reloadActiveFromVault"
+      >
+        重新载入
+      </button>
+      <button
+        type="button"
+        class="secondary"
+        :aria-label="`保留我的编辑 ${externalChangeToast.path}`"
+        @click="dismissExternalChangeToast"
+      >
+        保留我的编辑
+      </button>
     </section>
   </div>
 </template>

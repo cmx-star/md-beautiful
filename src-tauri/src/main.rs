@@ -5,17 +5,23 @@ mod migration_helpers;
 mod sync_backend;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
+use notify::RecommendedWatcher;
+use notify::{EventKind, RecursiveMode, Watcher};
+
 const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Tauri event channel for vault file changes.
+const VAULT_CHANGED_EVENT: &str = "vault://changed";
 
 #[derive(Clone)]
 struct AppLogger {
@@ -127,6 +133,15 @@ struct VaultState {
     /// sync.  They are kept here until the next sync confirms the deletion with
     /// the remote and removes them from the baseline.
     pending_local_deletions: HashMap<String, BaselineEntry>,
+    /// Active filesystem watcher for the Vault root.  `None` when no Vault is open.
+    /// Dropping the handle (or assigning `None`) tears the watcher down.
+    watcher: Option<RecommendedWatcher>,
+    /// Cached Tauri `AppHandle` so the watcher closure can emit events.
+    app_handle: Option<tauri::AppHandle>,
+    /// Relative paths of files the backend just wrote/renamed/deleted.  The
+    /// watcher swallows the corresponding events so the frontend doesn't see its
+    /// own writes bounce back as "external" changes.
+    pending_self_writes: HashSet<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -148,6 +163,9 @@ impl VaultState {
             fingerprints: HashMap::new(),
             sync_baseline: HashMap::new(),
             pending_local_deletions: HashMap::new(),
+            watcher: None,
+            app_handle: None,
+            pending_self_writes: HashSet::new(),
         }
     }
 
@@ -537,6 +555,7 @@ fn sync_test_connection(
 /// Open a Vault: set the root directory and scan for `.md` files.
 #[tauri::command]
 fn open_vault(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Mutex<VaultState>>,
     root: String,
 ) -> Result<Vec<FileInfo>, String> {
@@ -545,13 +564,22 @@ fn open_vault(
         return Err("选择的路径不是目录".to_string());
     }
     let canonical = root_path.canonicalize().map_err(|e| e.to_string())?;
-    let mut st = state.lock().unwrap();
-    st.set_root(canonical.clone());
-    drop(st);
+    {
+        let mut st = state.lock().unwrap();
+        st.set_root(canonical.clone());
+    }
 
     // Scan for .md files
     let mut files = Vec::new();
     scan_md_files(&canonical, &canonical, &mut files)?;
+
+    // Best-effort: arm the filesystem watcher so the frontend can react to
+    // external edits.  Failures are logged but do not block opening.
+    {
+        let mut st = state.lock().unwrap();
+        start_watcher(&app, &mut st, canonical.clone());
+    }
+
     Ok(files)
 }
 
@@ -624,6 +652,7 @@ fn vault_write_file(
 
     let mut st = state.lock().unwrap();
     st.fingerprint(&relative_path, mtime, size);
+    st.pending_self_writes.insert(relative_path.clone());
     Ok(FileFingerprint {
         path: relative_path,
         mtime,
@@ -667,7 +696,11 @@ fn vault_delete_file(
     let st = state.lock().unwrap();
     let path = st.resolve(&relative_path)?;
     drop(st);
-    fs::remove_file(&path).map_err(|e| e.to_string())
+    fs::remove_file(&path).map_err(|e| e.to_string())?;
+    let mut st = state.lock().unwrap();
+    st.fingerprints.remove(&relative_path);
+    st.pending_self_writes.insert(relative_path);
+    Ok(())
 }
 
 /// Rename/move a file within the Vault.
@@ -684,7 +717,11 @@ fn vault_rename_file(
     if let Some(parent) = new.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::rename(&old, &new).map_err(|e| e.to_string())
+    fs::rename(&old, &new).map_err(|e| e.to_string())?;
+    let mut st = state.lock().unwrap();
+    st.fingerprints.remove(&old_path);
+    st.pending_self_writes.insert(new_path);
+    Ok(())
 }
 
 /// List all `.md` files in the Vault.
@@ -696,6 +733,186 @@ fn vault_list_files(state: tauri::State<'_, Mutex<VaultState>>) -> Result<Vec<Fi
     let mut files = Vec::new();
     scan_md_files(&root, &root, &mut files)?;
     Ok(files)
+}
+
+// ── Vault file watcher ─────────────────────────────────────────────────────────
+
+/// Returns `true` when the given relative path matches one of the noise
+/// filters the watcher should silently drop:
+///
+/// * `.migration-backup-*.json` — pre-migration snapshots written by the
+///   import pipeline.
+/// * `.migration-log.json` — migration journal.
+/// * `imported/.reverted-*` — rollback directories created when a migration
+///   is undone.
+fn is_filtered_path(relative: &str) -> bool {
+    if relative == ".migration-log.json" {
+        return true;
+    }
+    if relative.starts_with(".migration-backup-") {
+        return true;
+    }
+    if relative.starts_with("imported/.reverted-") {
+        return true;
+    }
+    false
+}
+
+/// Build a forward-slash relative path from an absolute watcher path.  Returns
+/// `None` if the watcher path doesn't sit inside the Vault root or can't be
+/// represented as UTF-8.
+fn make_relative(root: &Path, raw: &Path) -> Option<String> {
+    let stripped = raw.strip_prefix(root).ok()?;
+    let mut parts: Vec<String> = Vec::new();
+    for component in stripped.components() {
+        let part = component.as_os_str().to_str()?;
+        if part.is_empty() {
+            continue;
+        }
+        parts.push(part.to_string());
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+/// Classify a single filesystem event.  This is the pure, testable core of the
+/// watcher pipeline: filter noise, drop self-writes, then map the `EventKind`
+/// to a frontend-friendly `created` / `modified` / `removed` payload.
+///
+/// Returns `Some(payload)` for events that should be emitted, or `None` when
+/// the event is suppressed.  Mutates `pending_self_writes` and `fingerprints`
+/// in place.
+fn classify_watcher_event(
+    root: &Path,
+    raw_path: &Path,
+    kind: EventKind,
+    pending_self_writes: &mut HashSet<String>,
+    fingerprints: &mut HashMap<String, (u64, u64)>,
+) -> Option<serde_json::Value> {
+    let relative = make_relative(root, raw_path)?;
+    if is_filtered_path(&relative) {
+        return None;
+    }
+    if pending_self_writes.remove(&relative) {
+        // Backend originated this change; don't echo it back.
+        return None;
+    }
+
+    let kind_label = match kind {
+        EventKind::Create(_) => "created",
+        EventKind::Modify(_) => "modified",
+        EventKind::Remove(_) => "removed",
+        _ => return None,
+    };
+
+    if matches!(kind, EventKind::Remove(_)) {
+        fingerprints.remove(&relative);
+    } else if let Ok((mtime, size)) = file_fingerprint(raw_path) {
+        fingerprints.insert(relative.clone(), (mtime, size));
+    }
+
+    let at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    Some(serde_json::json!({
+        "path": relative,
+        "kind": kind_label,
+        "at": at,
+    }))
+}
+
+/// Build a `notify` watcher for the Vault root.  Failures are logged and
+/// non-fatal — the Vault stays usable, it just won't broadcast change events.
+fn start_watcher(app: &tauri::AppHandle, state: &mut VaultState, root: PathBuf) {
+    if !root.is_dir() {
+        eprintln!("vault watcher: root {:?} is not a directory", root);
+        return;
+    }
+
+    let root_for_callback = root.clone();
+    let app_handle = app.clone();
+
+    let result = (|| -> Result<RecommendedWatcher, String> {
+        let mut watcher =
+            notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+                let event = match result {
+                    Ok(event) => event,
+                    Err(error) => {
+                        eprintln!("vault watcher: event error: {}", error);
+                        return;
+                    }
+                };
+
+                // Re-fetch the latest state through Tauri's managed
+                // `Mutex<VaultState>` on every event so we always operate on the
+                // most recent paths/fingerprints.
+                let managed = match app_handle.try_state::<Mutex<VaultState>>() {
+                    Some(managed) => managed,
+                    None => return,
+                };
+                let mut st = match managed.lock() {
+                    Ok(st) => st,
+                    Err(error) => {
+                        eprintln!("vault watcher: state poisoned: {}", error);
+                        return;
+                    }
+                };
+
+                for raw in &event.paths {
+                    let VaultState {
+                        ref mut pending_self_writes,
+                        ref mut fingerprints,
+                        ..
+                    } = *st;
+                    if let Some(payload) = classify_watcher_event(
+                        &root_for_callback,
+                        raw,
+                        event.kind,
+                        pending_self_writes,
+                        fingerprints,
+                    ) {
+                        if let Err(error) = app_handle.emit(VAULT_CHANGED_EVENT, payload) {
+                            eprintln!("vault watcher: emit failed: {}", error);
+                        }
+                    }
+                }
+            })
+            .map_err(|error| error.to_string())?;
+
+        watcher
+            .watch(&root, RecursiveMode::Recursive)
+            .map_err(|error| error.to_string())?;
+        Ok(watcher)
+    })();
+
+    match result {
+        Ok(watcher) => {
+            state.watcher = Some(watcher);
+            state.app_handle = Some(app.clone());
+        }
+        Err(error) => {
+            eprintln!("vault watcher: failed to start: {}", error);
+        }
+    }
+}
+
+/// Close the active Vault: drop the watcher, clear in-memory state, and
+/// detach the cached `AppHandle`.  Safe to call when no Vault is open.
+#[tauri::command]
+fn close_vault(state: tauri::State<'_, Mutex<VaultState>>) -> Result<(), String> {
+    let mut st = state.lock().unwrap();
+    st.watcher = None;
+    st.app_handle = None;
+    st.fingerprints.clear();
+    st.sync_baseline.clear();
+    st.pending_local_deletions.clear();
+    st.pending_self_writes.clear();
+    st.root = None;
+    Ok(())
 }
 
 /// Get the app's data directory (for non-Vault app data).
@@ -1171,6 +1388,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Vault
             open_vault,
+            close_vault,
             vault_read_file,
             vault_write_file,
             vault_check_changed,
@@ -1381,6 +1599,121 @@ mod tests {
         assert!(size > 0);
         assert!(mtime > 0);
         assert_eq!(size as usize, "atomic content".len());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn notification_self_write_suppressed() {
+        let dir = create_vault_dir();
+        let note = dir.join("note.md");
+        fs::write(&note, "first").unwrap();
+
+        let mut pending: HashSet<String> = HashSet::new();
+        let mut fingerprints: HashMap<String, (u64, u64)> = HashMap::new();
+
+        // Simulate the backend marking a self-write, then the OS echoing the
+        // event back.  The watcher must drop it.
+        pending.insert("note.md".to_string());
+        let payload = classify_watcher_event(
+            &dir,
+            &note,
+            EventKind::Modify(notify::event::ModifyKind::Any),
+            &mut pending,
+            &mut fingerprints,
+        );
+        assert!(payload.is_none(), "self-write should be suppressed");
+        assert!(
+            !pending.contains("note.md"),
+            "self-write marker should be consumed"
+        );
+
+        // Create / Remove / filtered paths must also be suppressed.
+        pending.insert("note.md".to_string());
+        let create_payload = classify_watcher_event(
+            &dir,
+            &note,
+            EventKind::Create(notify::event::CreateKind::Any),
+            &mut pending,
+            &mut fingerprints,
+        );
+        assert!(create_payload.is_none(), "self-create must be suppressed");
+
+        // .migration-backup-* / .migration-log.json / imported/.reverted-*
+        // are filtered even without a self-write marker.
+        let backup = dir.join(".migration-backup-2026-08-26T01-02-03-004Z.json");
+        fs::write(&backup, "{}").unwrap();
+        let log = dir.join(".migration-log.json");
+        fs::write(&log, "{}").unwrap();
+        let imported = dir.join("imported");
+        fs::create_dir_all(&imported).unwrap();
+        let reverted_dir = imported.join(".reverted-2026-08-26T05-00-00-000Z");
+        fs::create_dir_all(&reverted_dir).unwrap();
+        let reverted_file = reverted_dir.join("old.md");
+        fs::write(&reverted_file, "old").unwrap();
+
+        for noise in [backup.as_path(), log.as_path(), reverted_file.as_path()] {
+            let payload = classify_watcher_event(
+                &dir,
+                noise,
+                EventKind::Modify(notify::event::ModifyKind::Any),
+                &mut HashSet::new(),
+                &mut HashMap::new(),
+            );
+            assert!(
+                payload.is_none(),
+                "noise path {:?} should be filtered",
+                noise
+            );
+        }
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn notification_external_modification_detected() {
+        let dir = create_vault_dir();
+        let note = dir.join("b.md");
+        fs::write(&note, "external edit").unwrap();
+
+        let mut pending: HashSet<String> = HashSet::new();
+        let mut fingerprints: HashMap<String, (u64, u64)> = HashMap::new();
+
+        // An external `touch -m` style modification arrives; the path is
+        // NOT in pending_self_writes, so it must pass through.
+        let payload = classify_watcher_event(
+            &dir,
+            &note,
+            EventKind::Modify(notify::event::ModifyKind::Any),
+            &mut pending,
+            &mut fingerprints,
+        )
+        .expect("external modification should be emitted");
+
+        assert_eq!(payload["path"], "b.md");
+        assert_eq!(payload["kind"], "modified");
+        assert!(payload["at"].is_number());
+        // Fingerprint must be refreshed so the next single-poll check
+        // agrees with the watcher.
+        assert!(fingerprints.contains_key("b.md"));
+
+        // A subsequent remove on the same path should be reported and the
+        // fingerprint must be cleared.
+        fs::remove_file(&note).unwrap();
+        let remove_payload = classify_watcher_event(
+            &dir,
+            &note,
+            EventKind::Remove(notify::event::RemoveKind::Any),
+            &mut pending,
+            &mut fingerprints,
+        )
+        .expect("remove should be emitted");
+        assert_eq!(remove_payload["path"], "b.md");
+        assert_eq!(remove_payload["kind"], "removed");
+        assert!(
+            !fingerprints.contains_key("b.md"),
+            "removed files must drop out of fingerprints"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
