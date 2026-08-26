@@ -1,6 +1,11 @@
 import { defineStore } from 'pinia';
 import type { Note, Folder } from '@/types';
 
+export interface VaultFile {
+  name: string;
+  path: string;
+}
+
 export const useNoteStore = defineStore('notes', {
   state: () => ({
     notes: [] as Note[],
@@ -8,6 +13,8 @@ export const useNoteStore = defineStore('notes', {
     activeNoteId: null as string | null,
     searchQuery: '' as string,
     sidebarOpen: true as boolean,
+    vaultRoot: null as string | null,
+    vaultFiles: [] as VaultFile[],
   }),
   actions: {
     setNotes(notes: Note[]) {
@@ -63,6 +70,18 @@ export const useNoteStore = defineStore('notes', {
           n.content.toLowerCase().includes(q) ||
           n.tags.some((t: string) => t.toLowerCase().includes(q))
       );
+    },
+    setVaultRoot(root: string | null) {
+      this.vaultRoot = root;
+    },
+    setVaultFiles(files: VaultFile[]) {
+      this.vaultFiles = files;
+    },
+    clearVault() {
+      this.notes = [];
+      this.vaultRoot = null;
+      this.vaultFiles = [];
+      this.activeNoteId = null;
     },
   },
   persist: {

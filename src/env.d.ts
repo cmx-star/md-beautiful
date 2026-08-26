@@ -1,8 +1,4 @@
-// Type declarations for external libraries
-interface MathJaxInstance {
-  typesetPromise(elements?: HTMLElement[]): Promise<void>;
-}
-
-interface Window {
-  MathJax?: MathJaxInstance;
+declare module 'mathjax/es5/tex-svg.js?url' {
+  const url: string;
+  export default url;
 }

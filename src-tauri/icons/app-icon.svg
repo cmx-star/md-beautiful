@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Markdown Beautiful application icon</title>
+  <desc id="desc">A warm paper note with a coral editing cursor on a graphite background.</desc>
+  <rect x="72" y="72" width="880" height="880" rx="220" fill="#272525"/>
+  <rect x="122" y="122" width="780" height="780" rx="172" fill="#343130"/>
+  <path
+    d="M286 222h334l148 148v432H286c-44.2 0-80-35.8-80-80V302c0-44.2 35.8-80 80-80Z"
+    fill="#FFFDF8"
+  />
+  <path d="M620 222v104c0 24.3 19.7 44 44 44h104L620 222Z" fill="#E9E4DD"/>
+  <rect x="320" y="412" width="302" height="34" rx="17" fill="#46413F"/>
+  <rect x="320" y="498" width="344" height="28" rx="14" fill="#8B8480"/>
+  <rect x="320" y="574" width="272" height="28" rx="14" fill="#8B8480"/>
+  <rect x="320" y="650" width="222" height="28" rx="14" fill="#8B8480"/>
+  <rect x="629" y="548" width="38" height="160" rx="19" fill="#E25555"/>
+  <circle cx="648" cy="744" r="19" fill="#56A47B"/>
+</svg>

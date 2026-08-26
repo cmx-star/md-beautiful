@@ -1,81 +1,47 @@
-<template>
-  <div class="fixed inset-0 z-50 flex items-start justify-center pt-24">
-    <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" @click="close" />
-    <div
-      class="relative w-full max-w-xl bg-[var(--surface-card)] border border-[var(--border-color)] rounded-xl shadow-2xl animate-zoom-in overflow-hidden"
-    >
-      <!-- Input -->
-      <div class="flex items-center gap-2 px-4 py-3 border-b border-[var(--border-color)]">
-        <span class="text-[var(--text-tertiary)]">🔍</span>
-        <input
-          v-model="query"
-          ref="inputRef"
-          type="text"
-          placeholder="搜索命令…"
-          class="flex-1 bg-transparent text-[var(--text-primary)] text-sm outline-none placeholder:text-[var(--text-tertiary)]"
-          @keydown.down="selectedIndex = Math.min(selectedIndex + 1, filtered.length - 1)"
-          @keydown.up="selectedIndex = Math.max(selectedIndex - 1, 0)"
-          @keydown.enter="execute(filtered[selectedIndex])"
-          @keydown.esc="close"
-        />
-        <kbd class="text-xs text-[var(--text-tertiary)] bg-[var(--bg-secondary)] px-1.5 py-0.5 rounded">ESC</kbd>
-      </div>
-
-      <!-- Results -->
-      <div class="max-h-80 overflow-y-auto scrollbar-thin">
-        <div v-if="filtered.length === 0" class="p-4 text-center text-[var(--text-tertiary)] text-xs">
-          无结果
-        </div>
-        <button
-          v-for="(cmd, i) in filtered"
-          :key="cmd.id"
-          @click="execute(cmd)"
-          class="w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors"
-          :class="i === selectedIndex ? 'bg-[var(--surface-hover)]' : 'hover:bg-[var(--bg-secondary)]'"
-        >
-          <span class="text-lg">{{ cmd.icon ?? '⚡' }}</span>
-          <div class="flex-1 min-w-0">
-            <div class="text-sm font-medium text-[var(--text-primary)]">{{ cmd.label }}</div>
-            <div class="text-xs text-[var(--text-tertiary)] truncate">{{ cmd.description }}</div>
-          </div>
-          <span class="text-[10px] text-[var(--text-tertiary)] uppercase tracking-wider">{{ cmd.category }}</span>
-          <kbd v-if="cmd.shortcut" class="text-xs text-[var(--text-tertiary)] bg-[var(--bg-tertiary)] px-1.5 py-0.5 rounded">
-            {{ cmd.shortcut }}
-          </kbd>
-        </button>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue';
+import { computed, nextTick, onMounted, shallowRef, type Component } from 'vue';
+import {
+  Cloud,
+  FileInput,
+  FilePlus2,
+  FolderOpen,
+  Moon,
+  PanelLeft,
+  Search,
+  Sun,
+} from 'lucide-vue-next';
 
 interface Command {
   id: string;
   label: string;
   description: string;
-  icon?: string;
+  icon: Component;
   shortcut?: string;
-  category: 'file' | 'edit' | 'view' | 'sync' | 'settings' | 'help';
+  category: '文件' | '视图' | '同步';
   action: () => void;
 }
 
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{
+  close: [];
+  'open-file': [];
+  'open-vault': [];
+  'new-note': [];
+  'toggle-theme': [];
+  'toggle-sidebar': [];
+  sync: [];
+}>();
 
-const query = ref('');
-const selectedIndex = ref(0);
-const inputRef = ref<HTMLInputElement | null>(null);
+const query = shallowRef('');
+const selectedIndex = shallowRef(0);
+const inputRef = shallowRef<HTMLInputElement | null>(null);
 
 const commands: Command[] = [
-  { id: 'new-note', label: '新建笔记', description: '创建一条空白笔记', icon: '📝', shortcut: '⌘N', category: 'file', action: () => {} },
-  { id: 'toggle-theme', label: '切换主题', description: '在浅色和深色主题之间切换', icon: '🎨', shortcut: '⌘T', category: 'view', action: () => {} },
-  { id: 'sync', label: '同步笔记', description: '将本地笔记同步到云端', icon: '☁️', shortcut: '⌘S', category: 'sync', action: () => {} },
-  { id: 'toggle-sidebar', label: '切换侧边栏', description: '显示或隐藏左侧笔记列表', icon: '📑', shortcut: '⌘B', category: 'view', action: () => {} },
-  { id: 'settings', label: '设置', description: '打开应用设置面板', icon: '⚙️', shortcut: '⌘,', category: 'settings', action: () => {} },
-  { id: 'export-pdf', label: '导出 PDF', description: '将当前笔记导出为 PDF 文件', icon: '📄', category: 'file', action: () => {} },
-  { id: 'export-html', label: '导出 HTML', description: '将当前笔记导出为独立 HTML 文件', icon: '🌐', category: 'file', action: () => {} },
-  { id: 'open-folder', label: '打开文件夹', description: '从文件系统导入 Markdown 文件', icon: '📂', shortcut: '⌘O', category: 'file', action: () => {} },
+  { id: 'new-note', label: '新建笔记', description: '创建一条空白笔记', icon: FilePlus2, shortcut: '⌘N', category: '文件', action: () => emit('new-note') },
+  { id: 'open-file', label: '打开 Markdown 文件', description: '打开并编辑单个本地 Markdown 文件', icon: FileInput, shortcut: '⌘O', category: '文件', action: () => emit('open-file') },
+  { id: 'open-folder', label: '打开 Vault', description: '载入本地 Markdown 目录', icon: FolderOpen, shortcut: '⌘⇧O', category: '文件', action: () => emit('open-vault') },
+  { id: 'toggle-theme', label: '切换主题', description: '在浅色和深色外观之间切换', icon: Moon, category: '视图', action: () => emit('toggle-theme') },
+  { id: 'toggle-sidebar', label: '切换侧边栏', description: '显示或隐藏导航与笔记列表', icon: PanelLeft, shortcut: '⌘B', category: '视图', action: () => emit('toggle-sidebar') },
+  { id: 'sync', label: '同步笔记', description: '打开同步设置并执行同步', icon: Cloud, category: '同步', action: () => emit('sync') },
 ];
 
 const filtered = computed(() => {
@@ -97,12 +63,50 @@ function close() {
   emit('close');
 }
 
-// Focus input on open
-watch(
-  () => true,
-  () => {
-    nextTick(() => inputRef.value?.focus());
-  },
-  { immediate: true }
-);
+onMounted(() => {
+  nextTick(() => inputRef.value?.focus());
+});
 </script>
+
+<template>
+  <div class="command-overlay">
+    <button class="overlay-backdrop" aria-label="关闭命令面板" @click="close" />
+    <section class="command-palette" role="dialog" aria-modal="true" aria-label="命令面板">
+      <header class="command-search">
+        <Search :size="18" />
+        <input
+          ref="inputRef"
+          v-model="query"
+          type="search"
+          placeholder="搜索命令"
+          @keydown.down.prevent="selectedIndex = Math.min(selectedIndex + 1, filtered.length - 1)"
+          @keydown.up.prevent="selectedIndex = Math.max(selectedIndex - 1, 0)"
+          @keydown.enter="execute(filtered[selectedIndex])"
+          @keydown.esc="close"
+        />
+        <kbd>ESC</kbd>
+      </header>
+
+      <div class="command-results scrollbar-thin">
+        <div v-if="filtered.length === 0" class="command-empty">没有匹配的命令</div>
+        <button
+          v-for="(command, index) in filtered"
+          :key="command.id"
+          class="command-item"
+          :class="{ 'is-selected': index === selectedIndex }"
+          @click="execute(command)"
+        >
+          <span class="command-icon">
+            <component :is="command.icon" :size="18" />
+          </span>
+          <span class="command-copy">
+            <strong>{{ command.label }}</strong>
+            <small>{{ command.description }}</small>
+          </span>
+          <span class="command-category">{{ command.category }}</span>
+          <kbd v-if="command.shortcut">{{ command.shortcut }}</kbd>
+        </button>
+      </div>
+    </section>
+  </div>
+</template>

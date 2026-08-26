@@ -1,45 +1,82 @@
-<template>
-  <div
-    class="flex flex-col h-full overflow-hidden"
-    :style="{ width: `${100 - splitRatio}%` }"
-  >
-    <div class="flex-1 overflow-y-auto editor-scroll p-8">
-      <div v-if="activeNote" class="max-w-3xl mx-auto">
-        <h1 class="text-2xl font-bold mb-3 text-[var(--text-primary)]">
-          {{ activeNote.title }}
-        </h1>
-        <div class="flex items-center gap-3 mb-5 text-xs text-[var(--text-tertiary)] pb-4 border-b border-[var(--border-color)]">
-          <span>{{ formatTime(activeNote.updatedAt) }}</span>
-          <span>·</span>
-          <span>{{ activeNote.wordCount }} 字</span>
-          <span v-if="activeNote.tags.length" class="flex gap-1">
-            <span
-              v-for="tag in activeNote.tags"
-              :key="tag"
-              class="px-1.5 py-0.5 bg-[var(--accent)]/10 text-[var(--accent)] rounded"
-            >#{{ tag }}</span>
-          </span>
-        </div>
-        <div
-          ref="previewRef"
-          class="markdown-preview prose prose-sm max-w-none text-[var(--text-primary)] leading-relaxed"
-        />
-      </div>
-      <EmptyState v-else />
-    </div>
-
-    <!-- Resize handle -->
-    <div
-      class="pane-divider absolute top-0 bottom-0 right-0 z-10"
-      @mousedown="startResize"
-    />
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { useNoteStore } from '@/stores/noteStore';
+import { useThemeStore } from '@/stores/themeStore';
 import { marked } from 'marked';
+import { sanitizeHtml } from '@/utils/sanitize';
+import EmptyState from '@/components/EmptyState.vue';
+import mathJaxUrl from 'mathjax/es5/tex-svg.js?url';
+
+interface MathJaxRuntime {
+  startup?: {
+    promise?: Promise<void>;
+    typeset?: boolean;
+  };
+  tex?: Record<string, unknown>;
+  svg?: Record<string, unknown>;
+  options?: Record<string, unknown>;
+  typesetPromise?: (elements: HTMLElement[]) => Promise<void>;
+  typesetClear?: (elements: HTMLElement[]) => void;
+}
+
+function getMathJax(): MathJaxRuntime | undefined {
+  return (window as typeof window & { MathJax?: MathJaxRuntime }).MathJax;
+}
+
+let mathJaxPromise: Promise<MathJaxRuntime> | null = null;
+
+function ensureMathJax(): Promise<MathJaxRuntime> {
+  const current = getMathJax();
+  if (current?.typesetPromise) return Promise.resolve(current);
+  if (mathJaxPromise) return mathJaxPromise;
+
+  (window as typeof window & { MathJax?: MathJaxRuntime }).MathJax = {
+    tex: {
+      inlineMath: [['$', '$'], ['\\(', '\\)']],
+      displayMath: [['$$', '$$'], ['\\[', '\\]']],
+      processEscapes: true,
+    },
+    svg: {
+      fontCache: 'local',
+    },
+    options: {
+      skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+    },
+    startup: {
+      typeset: false,
+    },
+  };
+
+  mathJaxPromise = new Promise<MathJaxRuntime>((resolve, reject) => {
+    document.getElementById('mathjax-runtime')?.remove();
+
+    const script = document.createElement('script');
+    script.id = 'mathjax-runtime';
+    script.src = mathJaxUrl;
+    script.async = true;
+    script.addEventListener('load', async () => {
+      try {
+        const runtime = getMathJax();
+        await runtime?.startup?.promise;
+        if (!runtime?.typesetPromise) {
+          throw new Error('MathJax browser runtime did not expose typesetPromise');
+        }
+        resolve(runtime);
+      } catch (error) {
+        reject(error);
+      }
+    });
+    script.addEventListener('error', () => {
+      reject(new Error('MathJax browser runtime failed to load'));
+    });
+    document.head.appendChild(script);
+  }).catch((error) => {
+    mathJaxPromise = null;
+    throw error;
+  });
+
+  return mathJaxPromise;
+}
 
 const props = defineProps<{
   splitRatio: number;
@@ -52,46 +89,42 @@ const emit = defineEmits<{
 }>();
 
 const store = useNoteStore();
+const themeStore = useThemeStore();
 const activeNote = computed(() => store.getActiveNote());
 const previewRef = ref<HTMLElement | null>(null);
-let lastRenderedContent = '';
+let renderVersion = 0;
 
 watch(
-  () => activeNote.value?.content,
-  async (content) => {
-    if (!content) return;
-    if (content === lastRenderedContent) return;
-    lastRenderedContent = content;
+  () => [activeNote.value?.id, activeNote.value?.content] as const,
+  async ([, content]) => {
+    const currentVersion = ++renderVersion;
+    const nextContent = content ?? '';
 
     marked.setOptions({ gfm: true, breaks: true });
-    const html = (marked.parse(content) as string) ?? '';
+    const html = (marked.parse(nextContent) as string) ?? '';
+    const safe = sanitizeHtml(html);
 
     await nextTick();
     if (!previewRef.value) return;
 
-    // Clear any previous MathJax containers before re-rendering to prevent duplicates
-    const containers = previewRef.value.querySelectorAll('mjx-container');
-    containers.forEach((el) => el.remove());
+    getMathJax()?.typesetClear?.([previewRef.value]);
 
-    previewRef.value.innerHTML = html;
+    previewRef.value.innerHTML = safe;
     await nextTick();
-    renderMathJax();
+
+    const containsMath = /(^|[^\\])\$\$?[\s\S]+?\$\$?|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]/m.test(nextContent);
+    if (!containsMath) return;
+
+    try {
+      const mathJax = await ensureMathJax();
+      if (currentVersion !== renderVersion || !previewRef.value) return;
+      await mathJax.typesetPromise?.([previewRef.value]);
+    } catch (error) {
+      console.warn('MathJax render failed', error);
+    }
   },
   { immediate: true }
 );
-
-function renderMathJax() {
-  if (!previewRef.value) return;
-  const mj = window.MathJax;
-  if (!mj) return;
-  try {
-    mj.typesetPromise([previewRef.value]).catch(() => {
-      // MathJax not ready yet
-    });
-  } catch {
-    // ignore
-  }
-}
 
 function startResize(e: MouseEvent) {
   e.preventDefault();
@@ -124,8 +157,29 @@ function formatTime(ts: number): string {
 }
 </script>
 
-<style scoped>
-.editor-scroll::-webkit-scrollbar { width: 6px; }
-.editor-scroll::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
-.editor-scroll::-webkit-scrollbar-track { background: var(--scrollbar-track); }
-</style>
+<template>
+  <section class="preview-pane" :style="{ width: `${100 - props.splitRatio}%` }">
+    <div class="pane-caption">
+      <span>预览</span>
+      <span v-if="activeNote">{{ activeNote.wordCount }} 字</span>
+    </div>
+    <div v-if="activeNote" class="preview-scroll scrollbar-thin">
+      <article class="preview-document">
+        <header class="preview-header">
+          <h1>{{ activeNote.title || '无标题笔记' }}</h1>
+          <div class="preview-meta">
+            <span>{{ formatTime(activeNote.updatedAt) }}</span>
+            <span v-if="activeNote.tags.length">{{ activeNote.tags.map((tag) => `#${tag}`).join(' · ') }}</span>
+          </div>
+        </header>
+        <div
+          ref="previewRef"
+          class="markdown-preview"
+          :class="themeStore.isDark ? 'dark' : ''"
+        />
+      </article>
+    </div>
+    <EmptyState v-else />
+    <div class="pane-divider" aria-hidden="true" @mousedown="startResize" />
+  </section>
+</template>

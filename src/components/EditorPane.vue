@@ -1,6 +1,104 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { useNoteStore } from '@/stores/noteStore';
+import { useThemeStore } from '@/stores/themeStore';
+import { Codemirror } from 'vue-codemirror';
+import { markdown } from '@codemirror/lang-markdown';
+import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+import { EditorView } from 'codemirror';
+import { vaultService } from '@/services/vaultService';
+import { documentService } from '@/services/documentService';
+import { appLogger } from '@/services/logger';
+import { countMarkdownCharacters, deriveNoteTitle } from '@/utils/noteTitle';
+import EmptyState from '@/components/EmptyState.vue';
+
+const props = defineProps<{
+  splitRatio: number;
+  isResizing: boolean;
+}>();
+
+defineEmits<{
+  'resize-start': [];
+  'resize-end': [];
+  'split-change': [ratio: number];
+}>();
+
+const store = useNoteStore();
+const themeStore = useThemeStore();
+const activeNote = computed(() => store.getActiveNote());
+const saving = ref(false);
+const saveError = ref('');
+const content = ref('');
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch(
+  () => activeNote.value?.id,
+  (id) => {
+    content.value = id
+      ? store.notes.find((note) => note.id === id)?.content ?? ''
+      : '';
+  },
+  { immediate: true }
+);
+
+async function onChange(newContent: string) {
+  const note = activeNote.value;
+  if (!note) return;
+  if (debounceTimer) clearTimeout(debounceTimer);
+
+  saveError.value = '';
+  const wordCount = countMarkdownCharacters(newContent);
+  store.updateNote(note.id, {
+    title: deriveNoteTitle(newContent),
+    content: newContent,
+    wordCount,
+  });
+
+  debounceTimer = setTimeout(async () => {
+    saving.value = true;
+    try {
+      if (note.source?.kind === 'file') {
+        await appLogger.debug('ui.file_save.started', 'source=file');
+        await documentService.writeMarkdownFile(note.source.path, newContent);
+        await appLogger.info('ui.file_save.completed', 'source=file');
+      } else if (store.vaultRoot) {
+        const relativePath = note.source?.kind === 'vault'
+          ? note.source.path
+          : `notes/${note.id}.md`;
+        await appLogger.debug('ui.file_save.started', 'source=vault');
+        await vaultService.writeFile(relativePath, newContent);
+        await appLogger.info('ui.file_save.completed', 'source=vault');
+      }
+    } catch (error) {
+      saveError.value = error instanceof Error ? error.message : String(error);
+      await appLogger.error('ui.file_save.failed', error);
+      console.error('Save failed:', error);
+    } finally {
+      saving.value = false;
+    }
+  }, 400);
+}
+
+const extensions = computed(() => [
+  markdown(),
+  syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+  EditorView.lineWrapping,
+  EditorView.darkTheme.of(themeStore.isDark),
+]);
+
+onBeforeUnmount(() => {
+  if (debounceTimer) clearTimeout(debounceTimer);
+});
+</script>
+
 <template>
-  <div class="flex flex-col h-full relative" :style="{ width: `${splitRatio}%` }">
-    <div class="flex-1 min-h-0 bg-[var(--bg-primary)] overflow-hidden">
+  <section class="editor-pane" :style="{ width: `${props.splitRatio}%` }">
+    <div class="pane-caption">
+      <span>Markdown</span>
+      <span v-if="saving" class="save-state">保存中</span>
+      <span v-else-if="saveError" class="save-error" :title="saveError">保存失败</span>
+    </div>
+    <div class="editor-surface">
       <Codemirror
         v-if="activeNote"
         v-model="content"
@@ -11,117 +109,5 @@
       />
       <EmptyState v-else />
     </div>
-    <!-- Resize handle removed — handled by PreviewPane -->
-  </div>
+  </section>
 </template>
-
-<script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount } from 'vue';
-import { useNoteStore } from '@/stores/noteStore';
-import { useThemeStore } from '@/stores/themeStore';
-import { Codemirror } from 'vue-codemirror';
-import { markdown } from '@codemirror/lang-markdown';
-import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
-import { EditorView } from 'codemirror';
-
-const props = defineProps<{
-  splitRatio: number;
-  isResizing: boolean;
-}>();
-const emit = defineEmits<{
-  'resize-start': [];
-  'resize-end': [];
-  'split-change': [ratio: number];
-}>();
-
-const store = useNoteStore();
-const themeStore = useThemeStore();
-const activeNote = computed(() => store.getActiveNote());
-
-const content = ref('');
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-watch(
-  () => activeNote.value?.id,
-  (id) => {
-    if (id) {
-      content.value = store.notes.find((n) => n.id === id)?.content ?? '';
-    }
-  },
-  { immediate: true }
-);
-
-function onChange(newContent: string) {
-  const note = activeNote.value;
-  if (!note) return;
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    const wordCount = newContent.trim().split(/\s+/).filter(Boolean).length;
-    store.updateNote(note.id, { content: newContent, wordCount });
-  }, 200);
-}
-
-const extensions = computed(() => [
-  markdown(),
-  syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-  EditorView.lineWrapping,
-  EditorView.darkTheme.of(themeStore.isDark),
-]);
-
-function startResize(e: MouseEvent) {
-  e.preventDefault();
-  emit('resize-start');
-  const startX = e.clientX;
-  const startRatio = props.splitRatio;
-  const handleMouseMove = (ev: MouseEvent) => {
-    const container = (ev.target as HTMLElement).closest('.flex')?.parentElement;
-    const width = container?.clientWidth ?? 800;
-    const delta = ev.clientX - startX;
-    const newRatio = Math.min(90, Math.max(10, (startRatio * width + delta) / width));
-    emit('split-change', newRatio);
-    themeStore.setSplitRatio(newRatio);
-  };
-  const handleMouseUp = () => {
-    emit('resize-end');
-    document.removeEventListener('mousemove', handleMouseMove);
-    document.removeEventListener('mouseup', handleMouseUp);
-  };
-  document.addEventListener('mousemove', handleMouseMove);
-  document.addEventListener('mouseup', handleMouseUp);
-}
-
-onBeforeUnmount(() => {
-  if (debounceTimer) clearTimeout(debounceTimer);
-});
-</script>
-
-<style scoped>
-.cm-editor-custom {
-  height: 100%;
-  font-size: 14px;
-  line-height: 1.7;
-}
-.cm-scroller {
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--scrollbar-thumb) transparent;
-}
-.cm-content {
-  padding: 24px;
-  max-width: 72ch;
-  margin: 0 auto;
-}
-.cm-gutters {
-  background: var(--surface-card) !important;
-  border-right: 1px solid var(--border-color);
-  color: var(--text-tertiary) !important;
-}
-.cm-gutterElement {
-  background: transparent !important;
-  color: var(--text-tertiary) !important;
-}
-.cm-activeLineGutter {
-  background: var(--bg-secondary) !important;
-  color: var(--text-secondary) !important;
-}
-</style>

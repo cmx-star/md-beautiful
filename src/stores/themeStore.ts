@@ -7,7 +7,7 @@ export const useThemeStore = defineStore('theme', {
     tabSize: 2 as number,
     wordWrap: true as boolean,
     splitRatio: 50 as number,
-    accentColor: '#0ea5e9' as string,
+    accentColor: '#e25555' as string,
   }),
   actions: {
     toggleTheme() {
@@ -45,8 +45,9 @@ export const useThemeStore = defineStore('theme', {
           if (s.wordWrap !== undefined) this.wordWrap = s.wordWrap as boolean;
           if (s.splitRatio) this.splitRatio = s.splitRatio as number;
           if (s.accentColor) {
-            this.accentColor = s.accentColor as string;
-            document.documentElement.style.setProperty('--accent', s.accentColor as string);
+            const savedAccent = s.accentColor as string;
+            this.accentColor = savedAccent === '#0ea5e9' ? '#e25555' : savedAccent;
+            document.documentElement.style.setProperty('--accent', this.accentColor);
           }
         }
       } catch {

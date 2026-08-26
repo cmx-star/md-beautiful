@@ -1,59 +1,17 @@
-<template>
-  <header class="h-11 flex items-center px-3 bg-[var(--surface-card)] border-b border-[var(--border-color)] flex-shrink-0 gap-1">
-    <!-- Sidebar toggle -->
-    <button
-      @click="$emit('toggleSidebar')"
-      class="p-1.5 rounded-md transition-colors"
-      :class="sidebarOpen ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'"
-      title="切换侧边栏 (⌘B)"
-    >
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-        <path
-          :d="sidebarOpen ? 'M3 4h10M3 8h7M3 12h10' : 'M3 4h10M3 8h10M3 12h10'"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-        />
-      </svg>
-    </button>
-
-    <div class="w-px h-5 bg-[var(--border-color)] mx-1" />
-
-    <!-- Theme toggle -->
-    <button
-      @click="$emit('toggleTheme')"
-      class="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-      :title="isDark ? '切换到浅色模式' : '切换到深色模式'"
-    >
-      <span class="text-base">{{ isDark ? '🌙' : '☀️' }}</span>
-    </button>
-
-    <div class="flex-1" />
-
-    <!-- Sync -->
-    <button
-      @click="$emit('sync')"
-      class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-colors"
-      :class="isSyncing ? 'bg-[var(--accent)]/10 text-[var(--accent)] animate-pulse' : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'"
-    >
-      <span>{{ isSyncing ? '🔄' : '☁️' }}</span>
-      <span>{{ isSyncing ? '同步中…' : '同步' }}</span>
-    </button>
-
-    <!-- Command palette -->
-    <button
-      @click="$emit('openPalette')"
-      class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] text-xs transition-colors"
-      title="命令面板 (⌘K)"
-    >
-      <span>⌘K</span>
-    </button>
-  </header>
-</template>
-
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useSyncStore } from '@/stores/syncStore';
+import { useNoteStore } from '@/stores/noteStore';
+import {
+  Cloud,
+  Command,
+  FileInput,
+  FolderOpen,
+  Moon,
+  PanelLeft,
+  RefreshCw,
+  Sun,
+} from 'lucide-vue-next';
 
 defineProps<{
   sidebarOpen: boolean;
@@ -64,9 +22,80 @@ const emit = defineEmits<{
   toggleSidebar: [];
   toggleTheme: [];
   sync: [];
+  openFile: [];
   openPalette: [];
+  openVault: [];
 }>();
 
 const syncStore = useSyncStore();
+const noteStore = useNoteStore();
 const isSyncing = computed(() => syncStore.isSyncing);
+const activeNote = computed(() => noteStore.getActiveNote());
 </script>
+
+<template>
+  <header class="app-toolbar" data-tauri-drag-region>
+    <div class="toolbar-leading">
+      <button
+        class="icon-button"
+        :class="{ 'is-active': !sidebarOpen }"
+        aria-label="切换侧边栏"
+        title="切换侧边栏 (⌘B)"
+        @click="$emit('toggleSidebar')"
+      >
+        <PanelLeft :size="18" />
+      </button>
+      <div class="toolbar-title">
+        <strong>{{ activeNote?.title || 'Markdown Beautiful' }}</strong>
+        <span>{{ activeNote ? `${activeNote.wordCount} 字` : 'Markdown workspace' }}</span>
+      </div>
+    </div>
+
+    <div class="toolbar-actions">
+      <button
+        class="icon-button"
+        aria-label="打开 Markdown 文件"
+        title="打开 Markdown 文件 (⌘O)"
+        @click="$emit('openFile')"
+      >
+        <FileInput :size="18" />
+      </button>
+      <button
+        class="icon-button"
+        aria-label="打开 Vault"
+        :title="noteStore.vaultRoot ? '切换 Vault (⌘⇧O)' : '打开 Vault (⌘⇧O)'"
+        @click="$emit('openVault')"
+      >
+        <FolderOpen :size="18" />
+      </button>
+      <button
+        class="icon-button"
+        :aria-label="isDark ? '切换到浅色模式' : '切换到深色模式'"
+        :title="isDark ? '浅色模式' : '深色模式'"
+        @click="$emit('toggleTheme')"
+      >
+        <Sun v-if="isDark" :size="18" />
+        <Moon v-else :size="18" />
+      </button>
+      <button
+        class="icon-button sync-button"
+        :class="{ 'is-active': isSyncing }"
+        aria-label="同步"
+        :title="isSyncing ? '同步中' : '同步'"
+        @click="$emit('sync')"
+      >
+        <RefreshCw v-if="isSyncing" :size="18" class="spin" />
+        <Cloud v-else :size="18" />
+      </button>
+      <button
+        class="command-button"
+        aria-label="打开命令面板"
+        title="命令面板 (⌘K)"
+        @click="$emit('openPalette')"
+      >
+        <Command :size="15" />
+        <kbd>⌘K</kbd>
+      </button>
+    </div>
+  </header>
+</template>

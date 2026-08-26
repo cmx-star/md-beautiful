@@ -1,94 +1,136 @@
-<template>
-  <Teleport to="body">
-    <div v-if="open" class="fixed inset-0 z-40 flex items-center justify-center">
-      <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" @click="emit('update:open', false)" />
-      <div class="relative w-full max-w-lg bg-[var(--surface-card)] border border-[var(--border-color)] rounded-xl shadow-2xl p-6 animate-zoom-in m-4">
-        <div class="flex items-center justify-between mb-5">
-          <h2 class="text-base font-semibold text-[var(--text-primary)]">同步设置</h2>
-          <button @click="emit('update:open', false)" class="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-lg leading-none">&times;</button>
-        </div>
-
-        <!-- GitLab -->
-        <SyncCard
-          :provider="gitlabProvider"
-          :connected="gitlabConnected"
-          @toggle="toggleProvider('gitlab')"
-          @test="testGitlab"
-          @config-changed="updateConfig('gitlab', $event)"
-        />
-
-        <!-- WebDAV -->
-        <SyncCard
-          :provider="webdavProvider"
-          :connected="webdavConnected"
-          @toggle="toggleProvider('webdav')"
-          @test="testWebdav"
-          @config-changed="updateConfig('webdav', $event)"
-        />
-
-        <!-- Log -->
-        <div v-if="syncStore.syncLog.length" class="mt-4 pt-4 border-t border-[var(--border-color)]">
-          <div class="text-xs text-[var(--text-tertiary)] mb-2">同步日志</div>
-          <div class="max-h-32 overflow-y-auto scrollbar-thin text-xs font-mono text-[var(--text-secondary)] space-y-0.5">
-            <div v-for="(log, i) in syncStore.syncLog" :key="i">{{ log }}</div>
-          </div>
-        </div>
-
-        <div v-if="syncStore.lastError" class="mt-3 text-xs text-red-500">
-          {{ syncStore.lastError }}
-        </div>
-      </div>
-    </div>
-  </Teleport>
-</template>
-
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import { computed, shallowRef, watch } from 'vue';
 import { useSyncStore } from '@/stores/syncStore';
+import { credentialService, type CredentialKey } from '@/services/credentialService';
 import SyncCard from './SyncCard.vue';
-import type { SyncProvider } from '@/types';
+import type { SyncProvider, SyncProviderType } from '@/types';
+import { RefreshCw, X } from 'lucide-vue-next';
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ 'update:open': [value: boolean] }>();
 
 const syncStore = useSyncStore();
 
-const gitlabProvider = computed(() => syncStore.providers.find((p: SyncProvider) => p.type === 'gitlab')!);
+const githubProvider = computed(() => syncStore.providers.find((p: SyncProvider) => p.type === 'github')!);
 const webdavProvider = computed(() => syncStore.providers.find((p: SyncProvider) => p.type === 'webdav')!);
-const gitlabConnected = ref(false);
-const webdavConnected = ref(false);
+const githubConnected = shallowRef(false);
+const webdavConnected = shallowRef(false);
+const githubCredential = shallowRef('');
+const webdavCredential = shallowRef('');
 
-function toggleProvider(type: 'gitlab' | 'webdav') {
+const credentialKeys: Record<SyncProviderType, CredentialKey> = {
+  github: 'github-token',
+  webdav: 'webdav-password',
+};
+
+function toggleProvider(type: SyncProviderType) {
   syncStore.toggleProvider(type);
 }
 
-function updateConfig(type: 'gitlab' | 'webdav', config: Record<string, string>) {
+function updateConfig(type: SyncProviderType, config: Record<string, string>) {
   syncStore.updateConfig(type, config);
 }
 
-async function testGitlab() {
-  const p = gitlabProvider.value;
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function refreshCredentialStatus() {
   try {
-    // @ts-expect-error Tauri command
-    await window.__TAURI__.invoke('test_gitlab', { config: p.config });
-    gitlabConnected.value = true;
-    syncStore.appendLog('[GitLab] 连接成功');
-  } catch (e: any) {
-    gitlabConnected.value = false;
-    syncStore.setLastError(e?.message || '连接失败');
+    const [github, webdav] = await Promise.all([
+      credentialService.has(credentialKeys.github),
+      credentialService.has(credentialKeys.webdav),
+    ]);
+    syncStore.setCredentialStatus('github', github);
+    syncStore.setCredentialStatus('webdav', webdav);
+  } catch (error) {
+    syncStore.setLastError(errorMessage(error));
   }
 }
 
-async function testWebdav() {
-  const p = webdavProvider.value;
+async function testProvider(type: SyncProviderType) {
+  const provider = type === 'github' ? githubProvider.value : webdavProvider.value;
+  const credential = type === 'github' ? githubCredential : webdavCredential;
+  const connected = type === 'github' ? githubConnected : webdavConnected;
+
   try {
-    // @ts-expect-error Tauri command
-    await window.__TAURI__.invoke('test_webdav', { config: p.config });
-    webdavConnected.value = true;
-    syncStore.appendLog('[WebDAV] 连接成功');
-  } catch (e: any) {
-    webdavConnected.value = false;
-    syncStore.setLastError(e?.message || '连接失败');
+    const nextCredential = credential.value.trim();
+    if (nextCredential) {
+      await credentialService.set(credentialKeys[type], nextCredential);
+      syncStore.setCredentialStatus(type, true);
+      credential.value = '';
+    } else if (!provider.hasCredential) {
+      throw new Error(type === 'github' ? '请先填写 GitHub Access Token' : '请先填写 WebDAV 密码');
+    }
+
+    await invoke('sync_test_connection', { provider });
+    connected.value = true;
+    syncStore.setLastError(null);
+    syncStore.appendLog(`[${provider.name}] 连接成功`);
+  } catch (error) {
+    connected.value = false;
+    syncStore.setLastError(errorMessage(error) || '连接失败');
   }
 }
+
+watch(
+  () => props.open,
+  (open) => {
+    if (open) void refreshCredentialStatus();
+  },
+  { immediate: true }
+);
 </script>
+
+<template>
+  <Teleport to="body">
+    <div v-if="open" class="dialog-overlay">
+      <button class="overlay-backdrop" aria-label="关闭同步设置" @click="emit('update:open', false)" />
+      <section class="sync-dialog" role="dialog" aria-modal="true" aria-label="同步设置">
+        <header class="dialog-header">
+          <div class="dialog-title">
+            <span class="dialog-title-icon"><RefreshCw :size="18" /></span>
+            <div>
+              <h2>同步设置</h2>
+              <p>GitHub 与 WebDAV</p>
+            </div>
+          </div>
+          <button class="icon-button" aria-label="关闭" title="关闭" @click="emit('update:open', false)">
+            <X :size="18" />
+          </button>
+        </header>
+
+        <div class="sync-dialog-body scrollbar-thin">
+          <SyncCard
+            :provider="githubProvider"
+            :connected="githubConnected"
+            :credential-value="githubCredential"
+            @toggle="toggleProvider('github')"
+            @test="testProvider('github')"
+            @config-changed="updateConfig('github', $event)"
+            @credential-changed="githubCredential = $event"
+          />
+          <SyncCard
+            :provider="webdavProvider"
+            :connected="webdavConnected"
+            :credential-value="webdavCredential"
+            @toggle="toggleProvider('webdav')"
+            @test="testProvider('webdav')"
+            @config-changed="updateConfig('webdav', $event)"
+            @credential-changed="webdavCredential = $event"
+          />
+
+          <section v-if="syncStore.syncLog.length" class="sync-log">
+            <h3>同步日志</h3>
+            <div class="scrollbar-thin">
+              <p v-for="(log, index) in syncStore.syncLog" :key="index">{{ log }}</p>
+            </div>
+          </section>
+
+          <p v-if="syncStore.lastError" class="sync-error">{{ syncStore.lastError }}</p>
+        </div>
+      </section>
+    </div>
+  </Teleport>
+</template>

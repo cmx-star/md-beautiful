@@ -25,3 +25,6 @@
 /.idea/
 .DS_Store
 Thumbs.db
+.trellis/
+.pi/
+.agents/
