@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, shallowRef, type Component } from 'vue';
 import {
   Cloud,
+  Database,
   FileInput,
   FilePlus2,
   FolderOpen,
@@ -17,7 +18,7 @@ interface Command {
   description: string;
   icon: Component;
   shortcut?: string;
-  category: '文件' | '视图' | '同步';
+  category: '文件' | '视图' | '同步' | '数据';
   action: () => void;
 }
 
@@ -29,6 +30,7 @@ const emit = defineEmits<{
   'toggle-theme': [];
   'toggle-sidebar': [];
   sync: [];
+  'open-data-settings': [];
 }>();
 
 const query = shallowRef('');
@@ -42,6 +44,7 @@ const commands: Command[] = [
   { id: 'toggle-theme', label: '切换主题', description: '在浅色和深色外观之间切换', icon: Moon, category: '视图', action: () => emit('toggle-theme') },
   { id: 'toggle-sidebar', label: '切换侧边栏', description: '显示或隐藏导航与笔记列表', icon: PanelLeft, shortcut: '⌘B', category: '视图', action: () => emit('toggle-sidebar') },
   { id: 'sync', label: '同步笔记', description: '打开同步设置并执行同步', icon: Cloud, category: '同步', action: () => emit('sync') },
+  { id: 'data-settings', label: '笔记数据', description: '管理迁移快照、草稿与迁移日志', icon: Database, category: '数据', action: () => emit('open-data-settings') },
 ];
 
 const filtered = computed(() => {

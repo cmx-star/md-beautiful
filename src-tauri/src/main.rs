@@ -1,6 +1,7 @@
 // Tauri 2 backend — Markdown Beautiful
 // Handles: file I/O (Vault-bounded), remote sync, and local diagnostics
 
+mod migration_helpers;
 mod sync_backend;
 
 use serde::{Deserialize, Serialize};
@@ -1278,6 +1279,108 @@ mod tests {
         assert!(rotated.contains("\tINFO \tfile open\tfirst line"));
         assert_eq!(current.lines().count(), 1);
         assert!(current.contains("\tERROR\tfile.save\tsecond line"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn create_vault_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "markdown-beautiful-vault-test-{}-{}",
+            std::process::id(),
+            uuid_short()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn vault_resolve_rejects_parent_dir() {
+        let dir = create_vault_dir();
+        let inside = dir.join("inside.md");
+        fs::write(&inside, "# inside").unwrap();
+
+        let mut state = VaultState::new();
+        state.set_root(dir.clone());
+
+        let err = state.resolve("../escape.md").unwrap_err();
+        assert!(
+            err.contains("不允许访问 Vault 外的文件"),
+            "unexpected error: {}",
+            err
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn vault_resolve_rejects_absolute_path() {
+        let dir = create_vault_dir();
+        let mut state = VaultState::new();
+        state.set_root(dir.clone());
+
+        let err = state.resolve("/etc/passwd").unwrap_err();
+        assert!(err.contains("不允许绝对路径"), "unexpected error: {}", err);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn vault_resolve_accepts_valid_relative() {
+        let dir = create_vault_dir();
+        let inside = dir.join("inside.md");
+        fs::write(&inside, "# inside").unwrap();
+
+        let mut state = VaultState::new();
+        state.set_root(dir.clone());
+
+        let resolved = state.resolve("inside.md").expect("resolve should succeed");
+        let root = state.root_path().expect("root should be set");
+        assert!(
+            resolved.starts_with(root),
+            "resolved path {:?} should start with vault root {:?}",
+            resolved,
+            root
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn vault_fingerprint_records_and_detects_change() {
+        let dir = create_vault_dir();
+        let note = dir.join("note.md");
+        fs::write(&note, "first").unwrap();
+
+        let mut state = VaultState::new();
+        state.set_root(dir.clone());
+
+        let (mtime, size) = file_fingerprint(&note).unwrap();
+        state.fingerprint("note.md", mtime, size);
+
+        assert_eq!(state.check_changed("note.md"), Some(false));
+
+        // Force a different mtime so detection is reliable across filesystems.
+        let file = fs::OpenOptions::new().write(true).open(&note).unwrap();
+        let new_mtime = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        file.set_modified(new_mtime).unwrap();
+
+        assert_eq!(state.check_changed("note.md"), Some(true));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn vault_writes_atomically_and_updates_fingerprint() {
+        let dir = create_vault_dir();
+        let target = dir.join("atomic.md");
+
+        atomic_write_file(&target, "atomic content").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "atomic content");
+
+        let (mtime, size) = file_fingerprint(&target).unwrap();
+        assert!(size > 0);
+        assert!(mtime > 0);
+        assert_eq!(size as usize, "atomic content".len());
 
         fs::remove_dir_all(dir).unwrap();
     }

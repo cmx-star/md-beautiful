@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, shallowRef } from 'vue';
+import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 import { useNoteStore } from '@/stores/noteStore';
 import { useThemeStore } from '@/stores/themeStore';
 import { useSyncStore } from '@/stores/syncStore';
@@ -7,6 +7,10 @@ import { vaultService } from '@/services/vaultService';
 import { documentService } from '@/services/documentService';
 import { appLogger } from '@/services/logger';
 import { countMarkdownCharacters, deriveNoteTitle } from '@/utils/noteTitle';
+import { runMigration, revertMigration } from '@/services/migrationService';
+import { createTauriVaultAdapter } from '@/services/vaultAdapter';
+import { clearDraft, listRecoverableDrafts } from '@/services/draftService';
+import DataSettings from '@/components/Settings/DataSettings.vue';
 import Sidebar from '@/components/Sidebar.vue';
 import Toolbar from '@/components/Toolbar.vue';
 import EditorPane from '@/components/EditorPane.vue';
@@ -23,6 +27,9 @@ const splitRatio = shallowRef(themeStore.splitRatio);
 const isResizing = shallowRef(false);
 const showPalette = shallowRef(false);
 const showSync = shallowRef(false);
+const showDataSettings = shallowRef(false);
+const draftRecoveryPrompt = ref<Array<{ noteId: string; ageMs: number }>>([]);
+const vaultAdapter = shallowRef(createTauriVaultAdapter());
 const isMacOS = /Macintosh|Mac OS X/i.test(navigator.userAgent);
 
 function toggleSidebar() {
@@ -94,9 +101,82 @@ async function openVault(root: string) {
       'ui.vault_open.completed',
       `files=${files.length} loaded=${notes.length}`
     );
+    await maybeRunMigration();
+    await maybePromptDraftRecovery();
   } catch (error) {
     await appLogger.error('ui.vault_open.failed', error);
     console.error('Vault open failed:', error);
+  }
+}
+
+async function maybeRunMigration() {
+  // Run only when there is at least one legacy entry.  Empty/no-key is a
+  // no-op and we don't surface a UI signal for that.
+  if (typeof localStorage === 'undefined') return;
+  if (!localStorage.getItem('mardown-beautiful-notes')) return;
+  try {
+    const result = await runMigration(vaultAdapter.value);
+    await appLogger.info(
+      'ui.migration.completed',
+      `imported=${result.imported.length} failed=${result.failed.length} cleared=${result.clearedLocalStorage}`
+    );
+    if (result.snapshotFile) {
+      // Reload vault files so the new imported/ entries show up.
+      const files = await vaultService.listFiles();
+      noteStore.setVaultFiles(files);
+    }
+  } catch (error) {
+    await appLogger.error('ui.migration.failed', error);
+  }
+}
+
+async function maybePromptDraftRecovery() {
+  if (typeof localStorage === 'undefined') return;
+  const recoverable = listRecoverableDrafts();
+  if (recoverable.length === 0) return;
+  draftRecoveryPrompt.value = recoverable.map((d) => ({
+    noteId: d.noteId,
+    ageMs: d.ageMs,
+  }));
+  await appLogger.info('ui.drafts.recoverable', `count=${recoverable.length}`);
+}
+
+async function recoverDraft(noteId: string) {
+  try {
+    const draft = listRecoverableDrafts().find((d) => d.noteId === noteId);
+    if (!draft) return;
+    const targetNote = noteStore.notes.find((n) => n.id === noteId);
+    if (!targetNote) {
+      await appLogger.error('ui.drafts.recover.missing', `noteId=${noteId}`);
+      return;
+    }
+    await vaultService.writeFile(targetNote.source?.path ?? '', draft.entry.content);
+    clearDraft(noteId);
+    draftRecoveryPrompt.value = draftRecoveryPrompt.value.filter(
+      (d) => d.noteId !== noteId
+    );
+    await appLogger.info('ui.drafts.recover.completed', `noteId=${noteId}`);
+  } catch (error) {
+    await appLogger.error('ui.drafts.recover.failed', error);
+  }
+}
+
+function discardDraft(noteId: string) {
+  clearDraft(noteId);
+  draftRecoveryPrompt.value = draftRecoveryPrompt.value.filter(
+    (d) => d.noteId !== noteId
+  );
+  void appLogger.info('ui.drafts.discard', `noteId=${noteId}`);
+}
+
+async function handleRevert(snapshotFile: string) {
+  try {
+    await revertMigration(vaultAdapter.value, snapshotFile);
+    const files = await vaultService.listFiles();
+    noteStore.setVaultFiles(files);
+    await appLogger.info('ui.migration.revert.completed', snapshotFile);
+  } catch (error) {
+    await appLogger.error('ui.migration.revert.failed', error);
   }
 }
 
@@ -254,7 +334,55 @@ onBeforeUnmount(() => {
       @toggle-theme="themeStore.toggleTheme()"
       @toggle-sidebar="toggleSidebar"
       @sync="handleSync"
+      @open-data-settings="showDataSettings = true"
     />
     <SyncPanel v-model:open="showSync" />
+
+    <section v-if="showDataSettings" class="data-settings-overlay" role="dialog" aria-label="笔记数据设置">
+      <DataSettings
+        :vault="vaultAdapter"
+        @revert="handleRevert"
+        @recover-draft="(p) => recoverDraft(p.noteId)"
+      />
+      <button type="button" class="close-button" @click="showDataSettings = false">关闭</button>
+    </section>
+
+    <section
+      v-if="draftRecoveryPrompt.length"
+      class="draft-recovery-dialog"
+      role="alertdialog"
+      aria-label="检测到未保存的草稿"
+    >
+      <h3>检测到未保存的草稿</h3>
+      <p>是否恢复下列笔记的本地草稿？</p>
+      <ul>
+        <li v-for="d in draftRecoveryPrompt" :key="d.noteId">
+          <code>{{ d.noteId }}</code>
+          <span>{{ Math.round(d.ageMs / 1000) }}s ago</span>
+          <button
+            type="button"
+            :aria-label="`恢复草稿 ${d.noteId}`"
+            @click="recoverDraft(d.noteId)"
+          >
+            恢复（覆盖 Vault 内对应文件）
+          </button>
+          <button
+            type="button"
+            class="secondary"
+            :aria-label="`仅查看草稿 ${d.noteId}`"
+          >
+            仅查看
+          </button>
+          <button
+            type="button"
+            class="secondary"
+            :aria-label="`放弃草稿 ${d.noteId}`"
+            @click="discardDraft(d.noteId)"
+          >
+            放弃
+          </button>
+        </li>
+      </ul>
+    </section>
   </div>
 </template>

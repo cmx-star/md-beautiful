@@ -30,6 +30,12 @@ const emit = defineEmits<{
 const syncStore = useSyncStore();
 const noteStore = useNoteStore();
 const isSyncing = computed(() => syncStore.isSyncing);
+const syncReady = computed(() => syncStore.hasReadyProvider);
+const syncBlockedReason = computed(() => {
+  if (isSyncing.value) return '同步中…';
+  if (!syncReady.value) return '同步状态机尚未实现（Phase 4）— 请先在同步设置中启用并配置凭据';
+  return '同步';
+});
 const activeNote = computed(() => noteStore.getActiveNote());
 </script>
 
@@ -79,9 +85,10 @@ const activeNote = computed(() => noteStore.getActiveNote());
       </button>
       <button
         class="icon-button sync-button"
-        :class="{ 'is-active': isSyncing }"
+        :class="{ 'is-active': isSyncing, 'is-disabled': !syncReady || isSyncing }"
+        :disabled="isSyncing || !syncReady"
         aria-label="同步"
-        :title="isSyncing ? '同步中' : '同步'"
+        :title="syncBlockedReason"
         @click="$emit('sync')"
       >
         <RefreshCw v-if="isSyncing" :size="18" class="spin" />

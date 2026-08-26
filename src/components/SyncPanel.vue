@@ -54,14 +54,21 @@ async function testProvider(type: SyncProviderType) {
   const credential = type === 'github' ? githubCredential : webdavCredential;
   const connected = type === 'github' ? githubConnected : webdavConnected;
 
+  // Phase 0 / DEVELOPMENT_PLAN_SUPPLEMENT.md §6: 前端拦截凭据缺失路径，
+  // 防止静默触发 sync_test_connection 远端 HTTP。
+  const credentialValue = credential.value.trim();
+  if (!provider.hasCredential && !credentialValue) {
+    const message = type === 'github' ? '请先填写 GitHub Access Token' : '请先填写 WebDAV 密码';
+    syncStore.setLastError(message);
+    syncStore.appendLog(`[${provider.name}] 凭据缺失，已拦截测试连接`);
+    return;
+  }
+
   try {
-    const nextCredential = credential.value.trim();
-    if (nextCredential) {
-      await credentialService.set(credentialKeys[type], nextCredential);
+    if (credentialValue) {
+      await credentialService.set(credentialKeys[type], credentialValue);
       syncStore.setCredentialStatus(type, true);
       credential.value = '';
-    } else if (!provider.hasCredential) {
-      throw new Error(type === 'github' ? '请先填写 GitHub Access Token' : '请先填写 WebDAV 密码');
     }
 
     await invoke('sync_test_connection', { provider });

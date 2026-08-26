@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  frontend:
+    name: Frontend (typecheck + vitest + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install
+        run: npm ci
+      - name: Type check
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm run test
+      - name: Scope coverage check (Phase 1-A)
+        # Vitest reporter names are picked up via the test file name; this
+        # grep guarantees the migration/draft/data-settings suites stay
+        # in the test set on every CI run.
+        run: |
+          if ! npm run test -- --run --reporter=verbose 2>&1 | grep -Eq "migration_?|draft_?|data-settings|slugify|frontmatter"; then
+            echo "Phase 1-A scope coverage missing: expected at least one of (migration, draft, data-settings, slugify, frontmatter) test names." >&2
+            exit 1
+          fi
+      - name: Build
+        run: npm run build
+
+  rust:
+    name: Rust (fmt + check + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.toml', 'src-tauri/Cargo.lock') }}
+      - name: Format check
+        working-directory: src-tauri
+        run: cargo fmt --check
+      - name: Check
+        working-directory: src-tauri
+        run: cargo check
+      - name: Test
+        working-directory: src-tauri
+        run: cargo test
+      - name: Scope coverage check (Phase 1-A Rust)
+        # Ensure the Rust migration helpers stay wired into the test set.
+        working-directory: src-tauri
+        run: |
+          if ! cargo test -- --list 2>&1 | grep -Eq "migration_(slug|frontmatter|snapshot|rollback)"; then
+            echo "Phase 1-A Rust scope coverage missing: expected at least one of (migration_slug, migration_frontmatter, migration_snapshot, migration_rollback) tests." >&2
+            exit 1
+          fi

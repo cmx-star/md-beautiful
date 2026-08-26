@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { SyncProvider } from '@/types';
 import { Check, Cloud, Github, PlugZap } from 'lucide-vue-next';
 
-defineProps<{
+const props = defineProps<{
   provider: SyncProvider;
   connected: boolean;
   credentialValue: string;
@@ -14,6 +15,30 @@ defineEmits<{
   configChanged: [config: Record<string, string>];
   credentialChanged: [value: string];
 }>();
+
+// 测试连接的前端拦截：没有凭据（既未保存到 Keychain，UI 输入也为空）时不允许点击。
+// 同步状态机本身在 Phase 4 实现，此处只是 UI 收紧 + 防止静默触发远端 HTTP。
+const credentialMissing = computed(() => !props.provider.hasCredential && !props.credentialValue.trim());
+const requiredFieldsMissing = computed(() => {
+  if (props.provider.type === 'github') {
+    return !props.provider.config.api_url || !props.provider.config.owner || !props.provider.config.repo;
+  }
+  if (props.provider.type === 'webdav') {
+    return !props.provider.config.url || !props.provider.config.username;
+  }
+  return true;
+});
+const testBlockedReason = computed(() => {
+  if (credentialMissing.value) {
+    return props.provider.type === 'github'
+      ? '请先填写 GitHub Access Token 后再测试连接'
+      : '请先填写 WebDAV 密码后再测试连接';
+  }
+  if (requiredFieldsMissing.value) {
+    return '请先填写完必填配置项（URL / Owner / Repo 等）';
+  }
+  return '测试连接';
+});
 </script>
 
 <template>
@@ -48,7 +73,12 @@ defineEmits<{
         <InputField label="Username" :value="provider.config.username" @input="$emit('configChanged', { ...provider.config, username: $event })" placeholder="用户名" />
         <InputField label="Password" :value="credentialValue" @input="$emit('credentialChanged', $event)" type="password" :placeholder="provider.hasCredential ? '已保存，留空则继续使用' : '输入后保存到系统钥匙串'" />
       </div>
-      <button class="test-connection-button" @click="$emit('test')">
+      <button
+        class="test-connection-button"
+        :disabled="credentialMissing || requiredFieldsMissing"
+        :title="testBlockedReason"
+        @click="$emit('test')"
+      >
         <PlugZap :size="15" />
         测试连接
       </button>

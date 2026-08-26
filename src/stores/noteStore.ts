@@ -85,7 +85,18 @@ export const useNoteStore = defineStore('notes', {
     },
   },
   persist: {
-    key: 'mardown-beautiful-notes',
+    key: 'mardown-beautiful-note-store',
     storage: localStorage,
+    // Only UI preferences survive a reload; the actual note bodies live
+    // in the Vault as `.md` files (see migrationService).  Anything that
+    // is *content* (notes, folders) is excluded so a stale copy can
+    // never silently shadow a freshly-edited file.
+    pick: [
+      'vaultRoot',
+      'vaultFiles',
+      'activeNoteId',
+      'sidebarOpen',
+      'searchQuery',
+    ] as unknown as never,
   },
 });
