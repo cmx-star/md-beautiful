@@ -28,3 +28,5 @@ Thumbs.db
 .trellis/
 .pi/
 .agents/
+.dsh/
+.work/
