@@ -30,3 +30,5 @@ Thumbs.db
 .agents/
 .dsh/
 .work/
+# Added by code-review-graph
+.code-review-graph/
