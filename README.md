@@ -204,6 +204,25 @@ Vault 目录迁出后的结构：
 - **冲突中心**：双方相对基线均有修改时进入人工决策——保留本地（上传）/ 采用远端（覆盖本地）/ 双方保留（远端副本另存 `*.remote-<时间戳>.md`）；删除类破坏性操作同样必须逐条确认。
 - **失败可重试**：动作逐条应用，失败记录在日志；重试只补齐未完成的动作，不产生重复文件或虚假完成状态。
 
+## 🚀 导出服务（Phase 5）
+
+命令面板 →「导出当前文档」（⌘⇧E）。前端只提交文档、格式、资源清单与用户 CSS，不直接拼接格式文件：
+
+- **始终可用**：HTML（复用预览白名单清洗产物 + 默认/用户样式模板）、纯文本 TXT、打印 / 系统另存为 PDF。
+- **Pandoc 格式**：DOCX、ODT、LaTeX、reStructuredText、MediaWiki、EPUB、PDF——自动探测本机 pandoc CLI，未安装时在导出对话框中明确禁用并给出安装指引（PDF 另需 LaTeX 引擎，失败信息含重试建议）。
+- **资源完整性**：导出前校验 `assets/` 引用，缺失资源中止导出并报告，绝不静默生成残缺文件。
+- **失败安全**：临时文件 + 原子替换，失败不会覆盖已有目标文件；报告包含格式、引擎、体积与警告。
+- **用户 CSS**：设置中编辑，预览与导出共用同一份（`mardown-beautiful-theme` 持久化）。
+
+> 已知限制：HTML 导出的公式以源码形式保留（Pandoc 格式由 Pandoc 原生渲染公式）；EPUB/PDF 的中文字体依赖本机引擎配置。
+
+## 🧪 质量验收记录（Phase 6，本机 macOS）
+
+- `npm run typecheck`、`npm test`（168 个 vitest 用例）、`npm run build` 全部通过。
+- `cargo test`（33 个 Rust 用例，覆盖 Vault 边界、原子写入、附件、迁移、同步基线、导出服务）与 `cargo check` 通过。
+- `npm run tauri:build -- --bundles dmg` 在本机完成 release 编译、.app 打包与 ad-hoc 签名；`bundle_dmg.sh`（AppleScript/Finder）在无交互环境下失败，改用 `hdiutil create -format UDZO` 生成 DMG 并验证可挂载、应用完整（见 `src-tauri/target/release/bundle/dmg/`）。
+- 未运行/待补的检查：Windows / Linux 安装验证与签名公证（需对应平台或 CI 矩阵）；桌面端人工回归（中文输入法、大文档压测）按计划 §8 需真机交互验证。
+
 ## 🗺️ 开发里程碑
 
 详细路线图见 [DEVELOPMENT_PLAN_SUPPLEMENT.md](./DEVELOPMENT_PLAN_SUPPLEMENT.md)
@@ -221,8 +240,8 @@ Vault 目录迁出后的结构：
 | Phase 2 — 写作体验与 Markdown 兼容 | 编辑命令 + 渐进隐藏 + 三种视图模式 | 🔲 待开发 |
 | Phase 3 — 知识管理与索引 | 双向链接 + 标签 + 全文搜索 | 🔲 待开发 |
 | Phase 4 — 可靠同步与冲突中心 | GitLab/WebDAV 状态机 + 冲突处理 | 🔲 待开发 |
-| Phase 5 — 公式性能与受限扩展 | 本地 MathJax + Worker 压测 | 🔲 待开发 |
-| Phase 6 — 发布与质量验收 | 三平台打包 + 签名 + 自动更新 | 🔲 待开发 |
+| Phase 5 — 导出服务与公式性能 | 导出服务（HTML/TXT 原生 + Pandoc 多格式 + 缺失资源中止 + 原子写入）+ 公式分段渲染缓存（键 = 公式源 + 模式 + 配置）+ 用户 CSS（预览/导出共用） | ✅ 已完成（导出与公式缓存） |
+| Phase 6 — 发布与质量验收 | macOS DMG 本机构建验证（Windows / Linux 留待 CI 矩阵）+ 三平台构建说明与已知限制 | 🟨 本机 macOS 已验证 |
 
 > Phase 0 验收包含：文档准确、构建基线、HTML 清洗回归、MathJax 本地化、CSP 收紧、Vault 路径边界单元测试、同步 UI 禁用。
 
