@@ -1994,3 +1994,116 @@ input:focus-visible {
   font-size: 12px;
   color: var(--text-tertiary);
 }
+
+/* ── Phase 4: conflict center ───────────────────────────────────────────── */
+
+.conflict-center {
+  border: 1px solid #e25555;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.conflict-center h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.conflict-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.conflict-card {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.conflict-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.conflict-kind {
+  font-size: 12px;
+  color: #c0392b;
+}
+
+.conflict-panes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.conflict-pane h4 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.conflict-pane pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--bg-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.conflict-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.conflict-actions button {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.conflict-actions button:hover {
+  border-color: var(--accent, #e25555);
+}
+
+.conflict-actions button.danger {
+  border-color: #c0392b;
+  color: #c0392b;
+}
+
+.sync-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.sync-progress button {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+}

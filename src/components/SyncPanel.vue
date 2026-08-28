@@ -128,6 +128,78 @@ watch(
             @credential-changed="webdavCredential = $event"
           />
 
+          <section v-if="syncStore.hasPendingDecisions" class="conflict-center" data-testid="conflict-center">
+            <h3>冲突中心</h3>
+            <p class="conflict-hint">
+              以下文件需要人工决策。任何一方版本都不会被静默丢弃；处理后基线才会推进。
+            </p>
+
+            <article
+              v-for="conflict in syncStore.pendingConflicts"
+              :key="conflict.path"
+              class="conflict-card"
+            >
+              <header>
+                <strong>{{ conflict.path }}</strong>
+                <span class="conflict-kind">双方均有修改</span>
+              </header>
+              <div class="conflict-panes">
+                <div class="conflict-pane">
+                  <h4>本地版本</h4>
+                  <pre class="scrollbar-thin">{{ conflict.local }}</pre>
+                </div>
+                <div class="conflict-pane">
+                  <h4>远端版本</h4>
+                  <pre class="scrollbar-thin">{{ conflict.remote }}</pre>
+                </div>
+              </div>
+              <div class="conflict-actions">
+                <button type="button" @click="syncStore.resolveConflict(conflict.path, 'keep-local')">
+                  保留本地（上传）
+                </button>
+                <button type="button" @click="syncStore.resolveConflict(conflict.path, 'keep-remote')">
+                  采用远端（覆盖本地）
+                </button>
+                <button type="button" @click="syncStore.resolveConflict(conflict.path, 'keep-both')">
+                  双方保留（另存副本）
+                </button>
+              </div>
+            </article>
+
+            <article
+              v-for="deletion in syncStore.pendingDeletions"
+              :key="deletion.path"
+              class="conflict-card"
+            >
+              <header>
+                <strong>{{ deletion.path }}</strong>
+                <span class="conflict-kind">
+                  {{ deletion.kind === 'delete-local' ? '远端已删除 — 是否删除本地文件？' : '本地已删除 — 是否删除远端文件？' }}
+                </span>
+              </header>
+              <div class="conflict-actions">
+                <button
+                  type="button"
+                  class="danger"
+                  @click="syncStore.confirmDeletion(deletion.path)"
+                >
+                  确认删除
+                </button>
+                <button type="button" @click="syncStore.dismissDeletion(deletion.path)">
+                  保留文件
+                </button>
+              </div>
+            </article>
+          </section>
+
+          <section v-if="syncStore.isSyncing" class="sync-progress">
+            <p>
+              {{ syncStore.phaseMessage }}
+              <span v-if="syncStore.total">（{{ syncStore.done }}/{{ syncStore.total }}）</span>
+            </p>
+            <button type="button" @click="syncStore.cancelSync()">取消</button>
+          </section>
+
           <section v-if="syncStore.syncLog.length" class="sync-log">
             <h3>同步日志</h3>
             <div class="scrollbar-thin">

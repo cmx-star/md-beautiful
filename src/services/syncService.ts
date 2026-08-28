@@ -4,21 +4,15 @@
  * The state machine:
  *   idle → planning → pulling/uploading → (conflict) → finalizing → done | error | cancelled
  *
- * The plan is constructed by the back-end (which compares the Vault against
- * remote metadata). The front-end walks the plan, prompting the user whenever
- * a conflict appears, and writes results back to the back-end one file at a
- * time so a failed PUT never leaves the Vault in a half-uploaded state.
+ * Plan construction happens in Rust (`sync_build_plan`), which diffs the
+ * Vault against remote metadata and the persisted baseline.  The front-end
+ * walks the plan: it applies pulls/uploads directly, and queues conflicts
+ * and destructive deletions for explicit user confirmation (the conflict
+ * center).  The baseline only advances for actions that actually succeeded,
+ * so a failed PUT never fabricates a "synced" state.
  */
 
-import type {
-  SyncAction,
-  SyncConflict,
-  SyncPlan,
-  SyncProvider,
-  SyncProviderType,
-  SyncResult,
-  SyncStatus,
-} from '@/types';
+import type { SyncProvider } from '@/types';
 
 export interface RemoteFileMeta {
   path: string;
@@ -27,40 +21,112 @@ export interface RemoteFileMeta {
   etag?: string;
 }
 
-export interface BuildPlanResponse {
-  plan: SyncPlan;
-  pulls: { path: string; content: string; remoteEtag: string; remoteSha: string }[];
-  remoteDeletions: { path: string; remoteEtag: string }[];
-  baseline: Record<string, { sha: string; etag: string }>;
+export interface BaselineEntry {
+  sha: string;
+  etag: string;
 }
+
+export interface ConflictDto {
+  path: string;
+  kind: string;
+  base: string;
+  local: string;
+  remote: string;
+  localMtime: number;
+  remoteSha: string;
+  remoteEtag: string;
+  localSha: string;
+}
+
+export type PlanActionDto =
+  | { kind: 'noop'; path: string; reason: string }
+  | { kind: 'pull'; path: string; remoteSha: string; remoteEtag: string }
+  | { kind: 'upload'; path: string; baseSha: string | null; remoteEtag: string | null }
+  | { kind: 'delete-local'; path: string; remoteSha: string; remoteEtag: string }
+  | { kind: 'delete-remote'; path: string; localSha: string }
+  | { kind: 'conflict'; conflict: ConflictDto };
+
+export interface PlanSummaryDto {
+  pull: number;
+  upload: number;
+  deleteLocal: number;
+  deleteRemote: number;
+  conflict: number;
+  noop: number;
+}
+
+export interface PulledFile {
+  path: string;
+  content: string;
+  remoteSha: string;
+  remoteEtag: string;
+}
+
+export interface BuildPlanResponse {
+  planId: string;
+  provider: string;
+  actions: PlanActionDto[];
+  summary: PlanSummaryDto;
+  remoteMeta: RemoteFileMeta[];
+  pulls: PulledFile[];
+  remoteDeletions: { path: string; remoteEtag: string; remoteSha: string }[];
+  baseline: Record<string, BaselineEntry>;
+}
+
+export type ApplyResponse = { sha: string; etag: string };
 
 function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   // @ts-expect-error Tauri global
   return window.__TAURI__.invoke(cmd, args);
 }
 
+/** Backend-facing provider DTO (credentials never leave Rust/keyring). */
+export function providerDto(provider: SyncProvider): Record<string, unknown> {
+  return {
+    type: provider.type,
+    name: provider.name,
+    enabled: provider.enabled,
+    config: provider.config,
+    hasCredential: provider.hasCredential,
+  };
+}
+
 export const syncService = {
   async buildPlan(provider: SyncProvider): Promise<BuildPlanResponse> {
-    return invoke<BuildPlanResponse>('sync_build_plan', { provider });
+    return invoke<BuildPlanResponse>('sync_build_plan', { provider: providerDto(provider) });
   },
 
-  async applyAction(
-    provider: SyncProvider,
-    action: SyncAction
-  ): Promise<{ ok: true; etag?: string; sha?: string } | { ok: false; error: string }> {
-    try {
-      const result = await invoke<{ etag?: string; sha?: string }>('sync_apply_action', {
-        provider,
-        action,
-      });
-      return { ok: true, etag: result.etag, sha: result.sha };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
+  async pull(path: string, provider: SyncProvider): Promise<ApplyResponse> {
+    return invoke<ApplyResponse>('sync_apply_action', {
+      provider: providerDto(provider),
+      action: { kind: 'pull', path },
+    });
   },
 
-  async fetchRemoteMeta(provider: SyncProvider): Promise<RemoteFileMeta[]> {
-    return invoke<RemoteFileMeta[]>('sync_list_remote', { provider });
+  async upload(
+    path: string,
+    content: string,
+    baseSha: string | null,
+    provider: SyncProvider
+  ): Promise<ApplyResponse> {
+    return invoke<ApplyResponse>('sync_apply_action', {
+      provider: providerDto(provider),
+      action: { kind: 'upload', path, content, baseSha },
+    });
+  },
+
+  async deleteLocal(path: string, provider: SyncProvider): Promise<ApplyResponse> {
+    return invoke<ApplyResponse>('sync_apply_action', {
+      provider: providerDto(provider),
+      action: { kind: 'delete-local', path },
+    });
+  },
+
+  async deleteRemote(path: string, provider: SyncProvider): Promise<ApplyResponse> {
+    return invoke<ApplyResponse>('sync_apply_action', {
+      provider: providerDto(provider),
+      action: { kind: 'delete-remote', path },
+    });
   },
 
   async readLocalFile(path: string): Promise<string> {
@@ -71,80 +137,11 @@ export const syncService = {
     await invoke<void>('vault_write_file', { relativePath: path, content });
   },
 
-  async deleteLocalFile(path: string): Promise<void> {
-    await invoke<void>('vault_delete_file', { relativePath: path });
-  },
-
-  async loadBaseline(): Promise<Record<string, { sha: string; etag: string }>> {
-    return invoke<Record<string, { sha: string; etag: string }>>('sync_load_baseline');
-  },
-
-  async saveBaseline(
-    baseline: Record<string, { sha: string; etag: string }>
-  ): Promise<void> {
+  async saveBaseline(baseline: Record<string, BaselineEntry>): Promise<void> {
     await invoke<void>('sync_save_baseline', { baseline });
   },
+
+  async loadBaseline(): Promise<Record<string, BaselineEntry>> {
+    return invoke<Record<string, BaselineEntry>>('sync_load_baseline');
+  },
 };
-
-export const emptyStatus: SyncStatus = {
-  phase: 'idle',
-  startedAt: null,
-  updatedAt: 0,
-  total: 0,
-  done: 0,
-  message: '',
-  conflicts: 0,
-  errors: 0,
-};
-
-export function summarizePlan(actions: SyncAction[]): SyncPlan['summary'] {
-  const summary = { pull: 0, upload: 0, deleteLocal: 0, deleteRemote: 0, conflict: 0, noop: 0 };
-  for (const action of actions) {
-    switch (action.kind) {
-      case 'pull':
-        summary.pull++;
-        break;
-      case 'upload':
-        summary.upload++;
-        break;
-      case 'delete-local':
-        summary.deleteLocal++;
-        break;
-      case 'delete-remote':
-        summary.deleteRemote++;
-        break;
-      case 'conflict':
-        summary.conflict++;
-        break;
-      case 'noop':
-        summary.noop++;
-        break;
-    }
-  }
-  return summary;
-}
-
-export function isProviderType(value: string): value is SyncProviderType {
-  return value === 'github' || value === 'webdav';
-}
-
-export function findConflict(plan: SyncPlan, path: string): SyncConflict | undefined {
-  for (const action of plan.actions) {
-    if (action.kind === 'conflict' && action.conflict.path === path) {
-      return action.conflict;
-    }
-  }
-  return undefined;
-}
-
-export function buildEmptyResult(plan: SyncPlan): SyncResult {
-  return {
-    id: crypto.randomUUID(),
-    planId: plan.id,
-    provider: plan.provider,
-    finishedAt: 0,
-    ok: true,
-    applied: [],
-    failed: [],
-  };
-}

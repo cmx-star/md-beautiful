@@ -45,7 +45,7 @@ const isSyncing = computed(() => syncStore.isSyncing);
 const syncReady = computed(() => syncStore.hasReadyProvider);
 const syncBlockedReason = computed(() => {
   if (isSyncing.value) return '同步中…';
-  if (!syncReady.value) return '同步状态机尚未实现（Phase 4）— 请先在同步设置中启用并配置凭据';
+  if (!syncReady.value) return '同步 — 请先在同步设置中启用并配置凭据';
   return '同步';
 });
 const activeNote = computed(() => noteStore.getActiveNote());

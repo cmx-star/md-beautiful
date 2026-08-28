@@ -28,6 +28,7 @@ use crate::{AppLogger, BaselineEntry, RemoteFileMeta, VaultState};
 // ── Provider DTOs ──────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncProviderConfig {
     pub r#type: String,
     pub name: String,
@@ -54,7 +55,7 @@ pub struct WebDavConfig {
 }
 
 #[derive(Deserialize, Clone, Debug)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ActionRequest {
     Pull {
         path: String,
@@ -73,12 +74,14 @@ pub enum ActionRequest {
 }
 
 #[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ActionResponse {
     pub sha: String,
     pub etag: String,
 }
 
 #[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ConflictPayload {
     pub path: String,
     pub kind: String,
@@ -92,7 +95,7 @@ pub struct ConflictPayload {
 }
 
 #[derive(Serialize, Clone, Debug)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
 pub enum PlanAction {
     Noop {
         path: String,
@@ -123,6 +126,7 @@ pub enum PlanAction {
 }
 
 #[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct PlanSummary {
     pub pull: u32,
     pub upload: u32,
@@ -133,6 +137,7 @@ pub struct PlanSummary {
 }
 
 #[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct BuildPlanResponse {
     pub plan_id: String,
     pub provider: String,
@@ -145,6 +150,7 @@ pub struct BuildPlanResponse {
 }
 
 #[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct PulledFile {
     pub path: String,
     pub content: String,
@@ -153,6 +159,7 @@ pub struct PulledFile {
 }
 
 #[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteDeletion {
     pub path: String,
     pub remote_etag: String,

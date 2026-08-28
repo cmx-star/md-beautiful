@@ -145,7 +145,7 @@ struct VaultState {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-struct BaselineEntry {
+pub struct BaselineEntry {
     sha: String,
     #[serde(default)]
     etag: String,
@@ -557,6 +557,48 @@ fn sync_test_connection(
     sync_backend::sync_test_connection(provider)
 }
 
+// ── Sync state machine commands (Phase 4) ─────────────────────────────────────
+
+#[tauri::command]
+fn sync_build_plan(
+    state: tauri::State<'_, Mutex<VaultState>>,
+    logger: tauri::State<'_, AppLogger>,
+    provider: sync_backend::SyncProviderConfig,
+) -> Result<sync_backend::BuildPlanResponse, String> {
+    sync_backend::sync_build_plan(provider, &state, &logger)
+}
+
+#[tauri::command]
+fn sync_apply_action(
+    state: tauri::State<'_, Mutex<VaultState>>,
+    logger: tauri::State<'_, AppLogger>,
+    provider: sync_backend::SyncProviderConfig,
+    action: sync_backend::ActionRequest,
+) -> Result<sync_backend::ActionResponse, String> {
+    sync_backend::sync_apply_action(provider, action, &state, &logger)
+}
+
+#[tauri::command]
+fn sync_load_baseline(
+    app: tauri::AppHandle,
+) -> Result<HashMap<String, BaselineEntry>, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(sync_backend::sync_load_baseline(&dir))
+}
+
+#[tauri::command]
+fn sync_save_baseline(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<VaultState>>,
+    baseline: HashMap<String, BaselineEntry>,
+) -> Result<(), String> {
+    // Keep the in-memory copy (used by plan building) and the disk copy
+    // (used across restarts) in sync.
+    sync_backend::sync_replace_baseline(&state, baseline.clone());
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    sync_backend::sync_save_baseline(&dir, baseline)
+}
+
 /// Open a Vault: set the root directory and scan for `.md` files.
 #[tauri::command]
 fn open_vault(
@@ -583,6 +625,17 @@ fn open_vault(
     {
         let mut st = state.lock().unwrap();
         start_watcher(&app, &mut st, canonical.clone());
+    }
+
+    // Restore the persisted sync baseline so plan building can run 3-way
+    // merges after a restart.
+    match app.path().app_data_dir() {
+        Ok(data_dir) => {
+            let baseline = sync_backend::sync_load_baseline(&data_dir);
+            let mut st = state.lock().unwrap();
+            st.replace_baseline(baseline);
+        }
+        Err(error) => eprintln!("vault open: baseline restore failed: {}", error),
     }
 
     Ok(files)
@@ -1647,6 +1700,11 @@ fn main() {
             credential_has,
             credential_clear,
             sync_test_connection,
+            // Sync state machine
+            sync_build_plan,
+            sync_apply_action,
+            sync_load_baseline,
+            sync_save_baseline,
             // GitLab
             test_gitlab,
             gitlab_list_files,
