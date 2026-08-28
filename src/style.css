@@ -755,6 +755,11 @@ input:focus-visible {
   overflow: hidden;
 }
 
+.editor-surface.is-drag-over {
+  outline: 2px dashed var(--accent, #e25555);
+  outline-offset: -4px;
+}
+
 .pane-divider {
   position: absolute;
   z-index: 10;

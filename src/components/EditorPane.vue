@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useNoteStore } from '@/stores/noteStore';
 import { useThemeStore } from '@/stores/themeStore';
 import { Codemirror } from 'vue-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import { EditorView } from 'codemirror';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { vaultService } from '@/services/vaultService';
 import { documentService } from '@/services/documentService';
+import {
+  attachmentMarkdown,
+  attachmentService,
+} from '@/services/attachmentService';
 import { appLogger } from '@/services/logger';
 import { countMarkdownCharacters, deriveNoteTitle } from '@/utils/noteTitle';
 import EmptyState from '@/components/EmptyState.vue';
@@ -29,7 +34,11 @@ const activeNote = computed(() => store.getActiveNote());
 const saving = ref(false);
 const saveError = ref('');
 const content = ref('');
+const dragOver = ref(false);
+const editorRef = ref<{ view?: EditorView } | null>(null);
+const editorSurface = ref<HTMLElement | null>(null);
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let unlistenDragDrop: (() => void) | null = null;
 
 watch(
   () => activeNote.value?.id,
@@ -79,15 +88,134 @@ async function onChange(newContent: string) {
   }, 400);
 }
 
+// ── Attachments (Phase 1-C) ───────────────────────────────────────────────────
+
+const EXT_BY_MIME: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+};
+
+/** Insert text at the caret; falls back to appending to the note. */
+function insertAtCursor(text: string): void {
+  const view = editorRef.value?.view;
+  if (view) {
+    const pos = view.state.selection.main.head;
+    view.dispatch({ changes: { from: pos, insert: text } });
+    view.focus();
+    return;
+  }
+  const note = activeNote.value;
+  if (note) store.updateNote(note.id, { content: note.content + text });
+}
+
+function requireVaultNote(): string | null {
+  const note = activeNote.value;
+  if (!note) return null;
+  if (note.source?.kind !== 'vault' || !store.vaultRoot) {
+    void appLogger.warn(
+      'ui.attachment.skipped',
+      'attachments require an open Vault and an active Vault note'
+    );
+    return null;
+  }
+  return note.source.path;
+}
+
+/** Write clipboard files into the Vault and insert links. Returns true when consumed. */
+async function pasteAttachmentFiles(files: FileList): Promise<boolean> {
+  const notePath = requireVaultNote();
+  if (!notePath) return false;
+  const links: string[] = [];
+  for (const file of Array.from(files)) {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const extension = EXT_BY_MIME[file.type] ?? file.name.split('.').pop() ?? 'bin';
+      const name = file.name || `pasted-${Date.now()}.${extension}`;
+      const info = await attachmentService.writeFromBytes(name, bytes);
+      links.push(attachmentMarkdown(info, notePath));
+      await appLogger.info('ui.attachment.pasted', `name=${info.name} size=${info.size}`);
+    } catch (error) {
+      await appLogger.error('ui.attachment.paste.failed', error);
+    }
+  }
+  if (links.length > 0) insertAtCursor(`\n${links.join('\n')}\n`);
+  return true;
+}
+
+async function importDroppedPaths(paths: string[]): Promise<void> {
+  const notePath = requireVaultNote();
+  if (!notePath) return;
+  const links: string[] = [];
+  for (const path of paths) {
+    try {
+      const info = await attachmentService.importFromPath(path);
+      links.push(attachmentMarkdown(info, notePath));
+      await appLogger.info('ui.attachment.imported', `name=${info.name} size=${info.size}`);
+    } catch (error) {
+      await appLogger.error('ui.attachment.import.failed', error);
+    }
+  }
+  if (links.length > 0) insertAtCursor(`\n${links.join('\n')}\n`);
+}
+
+/** Convert physical drag coordinates to CSS px and test editor bounds. */
+function dropInsideEditor(position?: { x: number; y: number }): boolean {
+  if (!position) return true;
+  const el = editorSurface.value;
+  if (!el) return false;
+  const scale = window.devicePixelRatio || 1;
+  const x = position.x / scale;
+  const y = position.y / scale;
+  const rect = el.getBoundingClientRect();
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
 const extensions = computed(() => [
   markdown(),
   syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
   EditorView.lineWrapping,
   EditorView.darkTheme.of(themeStore.isDark),
+  EditorView.domEventHandlers({
+    paste: (event: ClipboardEvent) => {
+      const files = event.clipboardData?.files;
+      if (!files || files.length === 0) return false;
+      event.preventDefault();
+      void pasteAttachmentFiles(files);
+      return true;
+    },
+  }),
 ]);
+
+onMounted(async () => {
+  try {
+    unlistenDragDrop = await getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === 'enter' || event.payload.type === 'over') {
+        dragOver.value = dropInsideEditor(event.payload.position);
+      } else if (event.payload.type === 'drop') {
+        const inside = dropInsideEditor(event.payload.position);
+        dragOver.value = false;
+        if (inside && event.payload.paths.length > 0) {
+          void importDroppedPaths(event.payload.paths);
+        }
+      } else {
+        dragOver.value = false;
+      }
+    });
+  } catch (error) {
+    // Drag-drop events can be unavailable in non-Tauri environments.
+    await appLogger.warn('ui.attachment.dragdrop.unavailable', String(error));
+  }
+});
 
 onBeforeUnmount(() => {
   if (debounceTimer) clearTimeout(debounceTimer);
+  if (unlistenDragDrop) {
+    unlistenDragDrop();
+    unlistenDragDrop = null;
+  }
 });
 </script>
 
@@ -98,9 +226,14 @@ onBeforeUnmount(() => {
       <span v-if="saving" class="save-state">保存中</span>
       <span v-else-if="saveError" class="save-error" :title="saveError">保存失败</span>
     </div>
-    <div class="editor-surface">
+    <div
+      ref="editorSurface"
+      class="editor-surface"
+      :class="{ 'is-drag-over': dragOver }"
+    >
       <Codemirror
         v-if="activeNote"
+        ref="editorRef"
         v-model="content"
         :extensions="extensions"
         :style="{ height: '100%' }"

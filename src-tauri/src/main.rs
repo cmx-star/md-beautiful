@@ -290,6 +290,11 @@ fn atomic_write_file(path: &Path, content: &str) -> Result<(), String> {
     result
 }
 
+/// Hard cap for a single attachment, whether imported from disk or pasted.
+const MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
+/// Vault-relative directory that holds imported attachments.
+const ASSET_DIR: &str = "assets";
+
 fn is_markdown_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -733,6 +738,232 @@ fn vault_list_files(state: tauri::State<'_, Mutex<VaultState>>) -> Result<Vec<Fi
     let mut files = Vec::new();
     scan_md_files(&root, &root, &mut files)?;
     Ok(files)
+}
+
+// ── Attachments (Phase 1-C) ────────────────────────────────────────────────────
+
+/// Reduce an arbitrary user/OS supplied file name to a safe single path
+/// component inside `assets/`.  Strips directory components, control
+/// characters, hidden-file prefixes, and falls back to a placeholder.
+fn sanitize_attachment_name(raw: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base.chars().filter(|c| !c.is_control()).collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." || trimmed.starts_with('.') {
+        "attachment".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Pick a name inside `assets/` that does not collide with an existing file.
+/// `photo.png` → `photo.png`, then `photo-1.png`, `photo-2.png`, …
+fn resolve_unique_attachment_name<F: Fn(&str) -> bool>(is_taken: F, desired: &str) -> String {
+    if !is_taken(desired) {
+        return desired.to_string();
+    }
+    let (stem, ext) = match desired.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), format!(".{}", ext)),
+        _ => (desired.to_string(), String::new()),
+    };
+    for n in 1..10_000u32 {
+        let candidate = format!("{}-{}{}", stem, n, ext);
+        if !is_taken(&candidate) {
+            return candidate;
+        }
+    }
+    format!("{}-{}{}", stem, uuid_short(), ext)
+}
+
+/// An attachment stored under `<vault>/assets/`.
+#[derive(Serialize, Clone, Debug)]
+pub struct AttachmentInfo {
+    /// Vault-relative, forward-slash path (e.g. `assets/photo-1.png`).
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+}
+
+/// Write raw attachment bytes into `<vault>/assets/` under a unique name.
+/// Shared by the import (file on disk) and clipboard (base64) commands.
+fn write_attachment_bytes(
+    root: &Path,
+    desired_name: &str,
+    bytes: &[u8],
+) -> Result<AttachmentInfo, String> {
+    if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err(format!(
+            "附件超过大小限制（{} MB）",
+            MAX_ATTACHMENT_BYTES / (1024 * 1024)
+        ));
+    }
+    let desired = sanitize_attachment_name(desired_name);
+    let dir = root.join(ASSET_DIR);
+    let unique = resolve_unique_attachment_name(|name| dir.join(name).exists(), &desired);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let target = dir.join(&unique);
+    {
+        let mut file = fs::File::create(&target).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    Ok(AttachmentInfo {
+        path: format!("{}/{}", ASSET_DIR, unique),
+        name: unique,
+        size: bytes.len() as u64,
+    })
+}
+
+#[tauri::command]
+fn vault_import_attachment(
+    state: tauri::State<'_, Mutex<VaultState>>,
+    logger: tauri::State<'_, AppLogger>,
+    source_path: String,
+) -> Result<AttachmentInfo, String> {
+    let src = PathBuf::from(&source_path);
+    let meta = fs::metadata(&src).map_err(|e| format!("无法读取附件来源: {}", e))?;
+    if !meta.is_file() {
+        return Err("附件来源不是文件".to_string());
+    }
+    if meta.len() > MAX_ATTACHMENT_BYTES {
+        return Err(format!(
+            "附件超过大小限制（{} MB）",
+            MAX_ATTACHMENT_BYTES / (1024 * 1024)
+        ));
+    }
+    let bytes = fs::read(&src).map_err(|e| format!("无法读取附件来源: {}", e))?;
+
+    let info = {
+        let st = state.lock().unwrap();
+        let root = st.root_path().ok_or("Vault 未打开")?.to_path_buf();
+        write_attachment_bytes(&root, &src.to_string_lossy(), &bytes)?
+    };
+    let mut st = state.lock().unwrap();
+    st.pending_self_writes.insert(info.path.clone());
+    logger.log(
+        "INFO",
+        "attachment.imported",
+        &format!("name={} size={}", info.name, info.size),
+    )?;
+    Ok(info)
+}
+
+#[tauri::command]
+fn vault_write_attachment(
+    state: tauri::State<'_, Mutex<VaultState>>,
+    logger: tauri::State<'_, AppLogger>,
+    name: String,
+    data_base64: String,
+) -> Result<AttachmentInfo, String> {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &data_base64)
+        .map_err(|e| format!("无效的附件数据: {}", e))?;
+
+    let info = {
+        let st = state.lock().unwrap();
+        let root = st.root_path().ok_or("Vault 未打开")?.to_path_buf();
+        write_attachment_bytes(&root, &name, &bytes)?
+    };
+    let mut st = state.lock().unwrap();
+    st.pending_self_writes.insert(info.path.clone());
+    logger.log(
+        "INFO",
+        "attachment.pasted",
+        &format!("name={} size={}", info.name, info.size),
+    )?;
+    Ok(info)
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct AttachmentPayload {
+    pub path: String,
+    pub name: String,
+    pub data_base64: String,
+}
+
+/// Read an attachment from the Vault as base64 so the webview can render it
+/// as a data URL (CSP `img-src` already allows `data:`).
+#[tauri::command]
+fn vault_read_attachment(
+    state: tauri::State<'_, Mutex<VaultState>>,
+    relative_path: String,
+) -> Result<AttachmentPayload, String> {
+    let st = state.lock().unwrap();
+    let path = st.resolve(&relative_path)?;
+    let meta = fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_ATTACHMENT_BYTES {
+        return Err("附件超过大小限制".to_string());
+    }
+    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(AttachmentPayload {
+        name: path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        path: relative_path,
+        data_base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
+    })
+}
+
+/// Core of the orphan audit: an asset is *referenced* when any note mentions
+/// `assets/<name>` (covers `![](assets/x.png)`, `../assets/x.png`,
+/// `<img src="assets/x.png">`, HTML embeds, …).  Orphans are reported —
+/// never deleted automatically.
+fn find_orphan_assets(asset_names: &[String], md_contents: &[String]) -> Vec<String> {
+    asset_names
+        .iter()
+        .filter(|name| {
+            !md_contents
+                .iter()
+                .any(|content| content.contains(&format!("{}/{}", ASSET_DIR, name)))
+        })
+        .cloned()
+        .collect()
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct AttachmentAudit {
+    pub total: u64,
+    pub orphans: Vec<String>,
+}
+
+/// Audit `<vault>/assets/` against all Vault notes.  Orphan attachments are
+/// listed for the user; the policy is report-only, no auto-deletion.
+#[tauri::command]
+fn vault_audit_attachments(
+    state: tauri::State<'_, Mutex<VaultState>>,
+) -> Result<AttachmentAudit, String> {
+    let root = {
+        let st = state.lock().unwrap();
+        st.root_path().ok_or("Vault 未打开")?.to_path_buf()
+    };
+
+    let assets_dir = root.join(ASSET_DIR);
+    let mut asset_names = Vec::new();
+    if let Ok(entries) = fs::read_dir(&assets_dir) {
+        for entry in entries.flatten() {
+            if entry.path().is_file() {
+                if let Some(name) = entry.file_name().to_str() {
+                    asset_names.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    let mut md_files = Vec::new();
+    scan_md_files(&root, &root, &mut md_files)?;
+    let mut md_contents = Vec::new();
+    for file in &md_files {
+        if let Ok(content) = fs::read_to_string(root.join(&file.path)) {
+            md_contents.push(content);
+        }
+    }
+
+    let orphans = find_orphan_assets(&asset_names, &md_contents);
+    Ok(AttachmentAudit {
+        total: asset_names.len() as u64,
+        orphans,
+    })
 }
 
 // ── Vault file watcher ─────────────────────────────────────────────────────────
@@ -1397,6 +1628,10 @@ fn main() {
             vault_delete_file,
             vault_rename_file,
             vault_list_files,
+            vault_import_attachment,
+            vault_write_attachment,
+            vault_read_attachment,
+            vault_audit_attachments,
             get_data_dir,
             // Standalone Markdown files
             pick_markdown_file,
@@ -1716,6 +1951,81 @@ mod tests {
         );
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn attachment_name_sanitized() {
+        assert_eq!(sanitize_attachment_name("photo.png"), "photo.png");
+        assert_eq!(sanitize_attachment_name("/etc/passwd"), "passwd");
+        assert_eq!(sanitize_attachment_name("a\\b\\c.txt"), "c.txt");
+        assert_eq!(sanitize_attachment_name("../escape.md"), "escape.md");
+        assert_eq!(sanitize_attachment_name(".hidden"), "attachment");
+        assert_eq!(sanitize_attachment_name(""), "attachment");
+        assert_eq!(sanitize_attachment_name("  "), "attachment");
+        assert_eq!(sanitize_attachment_name("na\nme.png"), "name.png");
+    }
+
+    #[test]
+    fn attachment_name_collisions_get_numeric_suffix() {
+        let taken = ["photo.png", "photo-1.png", "photo-2.png"];
+        let is_taken = |name: &str| taken.contains(&name);
+        assert_eq!(
+            resolve_unique_attachment_name(is_taken, "log.txt"),
+            "log.txt"
+        );
+        assert_eq!(
+            resolve_unique_attachment_name(is_taken, "photo.png"),
+            "photo-3.png"
+        );
+        // Extension-less files keep the suffix at the end.
+        let taken2 = ["archive"];
+        assert_eq!(
+            resolve_unique_attachment_name(|n| taken2.contains(&n), "archive"),
+            "archive-1"
+        );
+    }
+
+    #[test]
+    fn attachment_bytes_written_with_unique_names() {
+        let dir = create_vault_dir();
+        let first = write_attachment_bytes(&dir, "photo.png", b"one").unwrap();
+        assert_eq!(first.path, "assets/photo.png");
+        assert_eq!(first.size, 3);
+        let second = write_attachment_bytes(&dir, "photo.png", b"two").unwrap();
+        assert_eq!(second.path, "assets/photo-1.png");
+        assert_eq!(
+            fs::read_to_string(dir.join("assets/photo.png")).unwrap(),
+            "one"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("assets/photo-1.png")).unwrap(),
+            "two"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn attachment_oversized_rejected() {
+        let dir = create_vault_dir();
+        let err =
+            write_attachment_bytes(&dir, "big.bin", &vec![0u8; 101 * 1024 * 1024]).unwrap_err();
+        assert!(err.contains("超过大小限制"), "unexpected error: {}", err);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn attachment_orphan_detection() {
+        let assets = vec![
+            "used.png".to_string(),
+            "orphan.bin".to_string(),
+            "linked.pdf".to_string(),
+        ];
+        let notes = vec![
+            "![](assets/used.png)".to_string(),
+            "see [doc](../assets/linked.pdf) and <img src=\"assets/used.png\">".to_string(),
+        ];
+        let orphans = find_orphan_assets(&assets, &notes);
+        assert_eq!(orphans, vec!["orphan.bin".to_string()]);
     }
 }
 

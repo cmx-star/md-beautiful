@@ -25,9 +25,9 @@ cargo fmt
 ### 测试
 
 ```bash
-npm run test          # vitest 单元测试（含 slugify / frontmatter / migrationService / draftService / data-settings smoke）
+npm run test          # vitest 单元测试（含 slugify / frontmatter / migrationService / draftService / data-settings / assetPath / attachmentService smoke）
 npm run typecheck     # 前端类型检查
-cd src-tauri && cargo test   # Rust 单元测试（含 migration_helpers）
+cd src-tauri && cargo test   # Rust 单元测试（含 migration_helpers / attachment helpers）
 ```
 
 ## 📐 技术架构
@@ -141,7 +141,17 @@ Vault 目录迁出后的结构：
 
 新增/修改/删除事件 payload 形如 `{ path: string, kind: 'created' | 'modified' | 'removed', at: number }`（`path` 是相对 Vault 根的 forward-slash 路径，`at` 是毫秒时间戳）。
 
-## ☁️ 同步方案（开发中）
+## 📎 附件导入（Phase 1-C）
+
+打开 Vault 后，附件统一保存在 `<Vault>/assets/` 下，两种入口：
+
+- **OS 拖拽**：把任意文件从 Finder 拖到编辑区（出现珊瑚色虚线高亮），后端复制进 `assets/`；
+- **粘贴图片**：⌘V 粘贴剪贴板图片（截图、复制的图像文件），经 base64 写入 `assets/`。
+
+重名自动编号（`photo.png` → `photo-1.png` → `photo-2.png`），链接按笔记位置生成相对路径
+（根目录笔记用 `./assets/x.png`，嵌套笔记用 `../assets/x.png`），预览通过 `data:` URL
+内嵌显示本地附件（CSP 已允许 `img-src data:`）。「笔记数据」面板提供**附件审计**：
+列出未被任何笔记引用的孤儿附件；按数据安全策略，应用从不自动删除孤儿附件。
 
 ## ☁️ 同步方案（开发中）
 
@@ -172,6 +182,7 @@ Vault 目录迁出后的结构：
 | Phase 0 — 基线校准与安全止血 | 文档修正 + HTML 清洗 + CSP 收紧 + 构建基线 | ✅ 已完成（基线校准与安全止血） |
 | Phase 1-A — Pinia 迁出 + 草稿恢复 + 快照回滚 | 一次性迁出到 Vault + 草稿键隔离 + 迁移日志 + 一键回滚 UI | ✅ 已完成（数据迁出与回滚） |
 | Phase 1-B — Vault 监听 + 外部修改检测 | `notify` 递归监听 + `vault://changed` 事件 + 自写去噪 + 迁移产物过滤 + active-note 弹 toast + `close_vault` | ✅ 已完成（外部修改检测） |
+| Phase 1-C — 附件导入 | 拖拽 / 粘贴图片 → `assets/` 子目录 + 相对路径链接 + 重名自动编号 + 孤儿附件审计（只报告不删除）+ 预览内嵌显示 | ✅ 已完成（附件导入） |
 | Phase 1-C — 附件导入 | 拖拽 / 粘贴 / 复制进 Vault 子目录 | 🔲 待开发 |
 | Phase 2 — 写作体验与 Markdown 兼容 | 编辑命令 + 渐进隐藏 + 三种视图模式 | 🔲 待开发 |
 | Phase 3 — 知识管理与索引 | 双向链接 + 标签 + 全文搜索 | 🔲 待开发 |

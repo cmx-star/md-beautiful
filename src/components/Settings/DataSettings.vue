@@ -6,6 +6,7 @@ import {
   type MigrationLog,
 } from '@/services/migrationService';
 import { listRecoverableDrafts } from '@/services/draftService';
+import { attachmentService, type AttachmentAudit } from '@/services/attachmentService';
 import type { VaultAdapter } from '@/services/migrationService';
 
 const props = defineProps<{
@@ -21,6 +22,8 @@ const emit = defineEmits<{
 const snapshots = ref<Array<{ file: string; capturedAt: number }>>([]);
 const drafts = ref<Array<{ noteId: string; ageMs: number; content: string }>>([]);
 const log = ref<MigrationLog | null>(null);
+const attachmentAudit = ref<AttachmentAudit | null>(null);
+const auditError = ref('');
 
 async function refresh() {
   if (!props.vault) {
@@ -35,6 +38,13 @@ async function refresh() {
     ageMs: d.ageMs,
     content: d.entry.content,
   }));
+  try {
+    attachmentAudit.value = await attachmentService.audit();
+    auditError.value = '';
+  } catch (error) {
+    attachmentAudit.value = null;
+    auditError.value = String(error);
+  }
 }
 
 function handleRevert(snapshotFile: string) {
@@ -104,6 +114,29 @@ defineExpose({ refresh });
         </li>
       </ul>
       <p v-else class="empty">没有可恢复的草稿。</p>
+    </article>
+
+    <article class="panel">
+      <header>
+        <h3>附件审计</h3>
+        <p class="hint">
+          扫描 <code>assets/</code> 目录中未被任何笔记引用的附件（孤儿附件）。
+          按数据安全策略，应用 <strong>从不自动删除</strong> 孤儿附件，仅在此列出供人工处理。
+        </p>
+      </header>
+      <p v-if="!props.vault" class="empty">需要先打开 Vault 才能审计附件。</p>
+      <p v-else-if="auditError" class="empty">附件审计失败：{{ auditError }}</p>
+      <template v-else-if="attachmentAudit">
+        <p class="empty" data-testid="attachment-audit-summary">
+          共 {{ attachmentAudit.total }} 个附件，其中孤儿附件 {{ attachmentAudit.orphans.length }} 个。
+        </p>
+        <ul v-if="attachmentAudit.orphans.length" data-testid="orphan-list">
+          <li v-for="name in attachmentAudit.orphans" :key="name">
+            <code>assets/{{ name }}</code>
+          </li>
+        </ul>
+        <p v-else class="empty">没有孤儿附件。</p>
+      </template>
     </article>
 
     <article v-if="log" class="panel">

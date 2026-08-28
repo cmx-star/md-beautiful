@@ -4,6 +4,8 @@ import { useNoteStore } from '@/stores/noteStore';
 import { useThemeStore } from '@/stores/themeStore';
 import { marked } from 'marked';
 import { sanitizeHtml } from '@/utils/sanitize';
+import { resolveAssetPath } from '@/utils/assetPath';
+import { attachmentService } from '@/services/attachmentService';
 import EmptyState from '@/components/EmptyState.vue';
 import mathJaxUrl from 'mathjax/es5/tex-svg.js?url';
 
@@ -94,6 +96,35 @@ const activeNote = computed(() => store.getActiveNote());
 const previewRef = ref<HTMLElement | null>(null);
 let renderVersion = 0;
 
+/**
+ * Phase 1-C: rewrite Vault-relative `assets/…` image references into
+ * `data:` URLs so the strict-CSP webview can render local attachments.
+ * Failures leave the original alt text in place — they never break the doc.
+ */
+async function resolvePreviewImages(
+  root: HTMLElement,
+  versionAtStart: number
+): Promise<void> {
+  const note = activeNote.value;
+  if (!note || note.source?.kind !== 'vault') return;
+  const notePath = note.source.path;
+  const images = Array.from(root.querySelectorAll<HTMLImageElement>('img[src]'));
+  for (const img of images) {
+    const src = img.getAttribute('src');
+    if (!src) continue;
+    const assetPath = resolveAssetPath(notePath, src);
+    if (!assetPath || !assetPath.startsWith('assets/')) continue;
+    try {
+      const url = await attachmentService.readAsDataUrlCached(assetPath);
+      if (renderVersion !== versionAtStart) return;
+      img.src = url;
+      img.loading = 'lazy';
+    } catch (error) {
+      console.warn(`附件加载失败: ${assetPath}`, error);
+    }
+  }
+}
+
 watch(
   () => [activeNote.value?.id, activeNote.value?.content] as const,
   async ([, content]) => {
@@ -111,6 +142,7 @@ watch(
 
     previewRef.value.innerHTML = safe;
     await nextTick();
+    void resolvePreviewImages(previewRef.value, currentVersion);
 
     const containsMath = /(^|[^\\])\$\$?[\s\S]+?\$\$?|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]/m.test(nextContent);
     if (!containsMath) return;
