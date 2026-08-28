@@ -7,6 +7,7 @@ import { sanitizeHtml } from '@/utils/sanitize';
 import { resolveAssetPath } from '@/utils/assetPath';
 import { attachmentService } from '@/services/attachmentService';
 import { createDialectSession } from '@/utils/markdownDialect';
+import { useNoteIndex } from '@/composables/useNoteIndex';
 import EmptyState from '@/components/EmptyState.vue';
 import mathJaxUrl from 'mathjax/es5/tex-svg.js?url';
 
@@ -99,6 +100,29 @@ const emit = defineEmits<{
 const store = useNoteStore();
 const themeStore = useThemeStore();
 const activeNote = computed(() => store.getActiveNote());
+const noteIndex = useNoteIndex();
+
+/** 反向链接（引用当前笔记的笔记），Phase 3。 */
+const backlinks = computed(() => {
+  const note = activeNote.value;
+  if (!note || note.source?.kind !== 'vault') return [];
+  const paths = noteIndex.value.backlinks.get(note.source.path) ?? [];
+  return paths
+    .map((path) => noteIndex.value.byPath.get(path))
+    .filter((n): n is NonNullable<typeof n> => Boolean(n));
+});
+
+/** 当前笔记中未解析的双链目标，Phase 3。 */
+const unresolvedLinks = computed(() => {
+  const note = activeNote.value;
+  if (!note || note.source?.kind !== 'vault') return [];
+  return noteIndex.value.unresolved.get(note.source.path) ?? [];
+});
+
+function openBacklink(path: string) {
+  const target = noteIndex.value.byPath.get(path);
+  if (target) store.setActiveNote(target.id);
+}
 const previewRef = ref<HTMLElement | null>(null);
 let renderVersion = 0;
 let renderDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -251,6 +275,30 @@ function formatTime(ts: number): string {
           :class="themeStore.isDark ? 'dark' : ''"
           @click="handlePreviewClick"
         />
+        <section
+          v-if="backlinks.length || unresolvedLinks.length"
+          class="backlink-panel"
+          data-testid="backlink-panel"
+        >
+          <template v-if="backlinks.length">
+            <h3>反向链接（{{ backlinks.length }}）</h3>
+            <button
+              v-for="link in backlinks"
+              :key="link.path"
+              type="button"
+              class="backlink-item"
+              @click="openBacklink(link.path)"
+            >
+              {{ link.title || link.path }}
+            </button>
+          </template>
+          <template v-if="unresolvedLinks.length">
+            <h3>未解析链接（{{ unresolvedLinks.length }}）</h3>
+            <span v-for="target in unresolvedLinks" :key="target" class="unresolved-chip">
+              [[{{ target }}]]
+            </span>
+          </template>
+        </section>
       </article>
     </div>
     <EmptyState v-else />

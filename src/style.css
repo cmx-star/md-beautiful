@@ -1951,3 +1951,46 @@ input:focus-visible {
 .markdown-preview .footnote-backref {
   text-decoration: none;
 }
+
+/* ── Phase 3: backlink panel ─────────────────────────────────────────────── */
+
+.backlink-panel {
+  margin-top: 2.5em;
+  padding-top: 1em;
+  border-top: 1px solid var(--border-color);
+}
+
+.backlink-panel h3 {
+  margin: 0.8em 0 0.5em;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  font-weight: 600;
+}
+
+.backlink-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
+.backlink-item:hover {
+  border-color: var(--accent, #e25555);
+}
+
+.unresolved-chip {
+  display: inline-block;
+  border: 1px dashed var(--border-color);
+  border-radius: 999px;
+  padding: 2px 10px;
+  margin: 0 6px 6px 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}

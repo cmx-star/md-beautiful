@@ -18,6 +18,7 @@ import {
 import { EDITOR_COMMANDS } from '@/services/editorCommands';
 import { appLogger } from '@/services/logger';
 import { buildHighlightStyle } from '@/utils/highlightStyle';
+import { extractFromContent } from '@/utils/noteIndex';
 import { createMarkHiding } from '@/extensions/markHiding';
 import { countMarkdownCharacters, deriveNoteTitle } from '@/utils/noteTitle';
 import EmptyState from '@/components/EmptyState.vue';
@@ -75,6 +76,7 @@ async function onChange(newContent: string) {
     title: deriveNoteTitle(newContent),
     content: newContent,
     wordCount,
+    tags: extractFromContent(newContent).tags,
   });
 
   debounceTimer = setTimeout(async () => {

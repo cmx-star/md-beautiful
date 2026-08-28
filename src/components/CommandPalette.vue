@@ -13,6 +13,7 @@ import {
   PencilLine,
   Search,
   Settings,
+  SquarePen,
   Sun,
 } from 'lucide-vue-next';
 import type { ViewMode } from '@/types';
@@ -38,6 +39,7 @@ const emit = defineEmits<{
   'open-data-settings': [];
   'open-settings': [];
   'set-view-mode': [mode: ViewMode];
+  'rename-note': [];
 }>();
 
 const query = shallowRef('');
@@ -48,6 +50,7 @@ const commands: Command[] = [
   { id: 'new-note', label: '新建笔记', description: '创建一条空白笔记', icon: FilePlus2, shortcut: '⌘N', category: '文件', action: () => emit('new-note') },
   { id: 'open-file', label: '打开 Markdown 文件', description: '打开并编辑单个本地 Markdown 文件', icon: FileInput, shortcut: '⌘O', category: '文件', action: () => emit('open-file') },
   { id: 'open-folder', label: '打开 Vault', description: '载入本地 Markdown 目录', icon: FolderOpen, shortcut: '⌘⇧O', category: '文件', action: () => emit('open-vault') },
+  { id: 'rename-note', label: '重命名当前笔记', description: '更新引用链接并保留备份', icon: SquarePen, category: '文件', action: () => emit('rename-note') },
   { id: 'view-editor', label: '源码模式', description: '只显示编辑器', icon: PencilLine, shortcut: '⌘1', category: '视图', action: () => emit('set-view-mode', 'editor') },
   { id: 'view-split', label: '实时预览', description: '编辑器与预览分栏显示', icon: Columns2, shortcut: '⌘2', category: '视图', action: () => emit('set-view-mode', 'split') },
   { id: 'view-preview', label: '阅读模式', description: '只显示阅读视图', icon: BookOpen, shortcut: '⌘3', category: '视图', action: () => emit('set-view-mode', 'preview') },

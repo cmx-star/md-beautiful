@@ -8,6 +8,10 @@ import { documentService } from '@/services/documentService';
 import { appLogger } from '@/services/logger';
 import { countMarkdownCharacters, deriveNoteTitle } from '@/utils/noteTitle';
 import { normalizeCombo } from '@/services/shortcutRegistry';
+import { extractFromContent, rewriteLinksAfterRename } from '@/utils/noteIndex';
+import { resolveLinkTarget } from '@/utils/noteIndex';
+import { slugifyTitle } from '@/utils/slugify';
+import { useNoteIndex } from '@/composables/useNoteIndex';
 import { runMigration, revertMigration } from '@/services/migrationService';
 import { createTauriVaultAdapter } from '@/services/vaultAdapter';
 import { clearDraft, listRecoverableDrafts } from '@/services/draftService';
@@ -37,6 +41,7 @@ const vaultAdapter = shallowRef(createTauriVaultAdapter());
 const isMacOS = /Macintosh|Mac OS X/i.test(navigator.userAgent);
 const unlistenVaultChange = shallowRef<null | (() => void)>(null);
 const externalChangeToast = ref<{ noteId: string; path: string } | null>(null);
+const noteIndex = useNoteIndex();
 
 function activeNotePath(): string | null {
   const active = noteStore.getActiveNote();
@@ -171,7 +176,7 @@ async function openVault(root: string) {
           content,
           source: { kind: 'vault' as const, path: file.path },
           folderId: null,
-          tags: [],
+          tags: extractFromContent(content).tags,
           createdAt: Date.now(),
           updatedAt: Date.now(),
           wordCount: countMarkdownCharacters(content),
@@ -347,19 +352,124 @@ function focusSearch() {
   }
 }
 
-/** 双链跳转：按标题/别名查找笔记并激活；未解析的链接保持只读提示。 */
+/** 双链跳转：按 ID → 路径 → 标题/别名解析；歧义与未解析均有明确提示。 */
 function openWikiLink(target: string) {
-  const normalized = target.trim().toLowerCase();
-  const found = noteStore.notes.find(
-    (note) =>
-      note.title.toLowerCase() === normalized ||
-      note.title.replace(/\.md$/, '').toLowerCase() === normalized
-  );
-  if (found) {
-    noteStore.setActiveNote(found.id);
+  const resolution = resolveLinkTarget(noteIndex.value, target);
+  if (resolution.kind === 'resolved') {
+    noteStore.setActiveNote(resolution.noteId);
     void appLogger.info('ui.wiki_link.opened', `target=${target}`);
+  } else if (resolution.kind === 'ambiguous') {
+    void appLogger.warn(
+      'ui.wiki_link.ambiguous',
+      `target=${target} candidates=${resolution.candidates.length}`
+    );
+    window.alert(
+      `链接 [[${target}]] 有 ${resolution.candidates.length} 个候选笔记，请打开笔记后在反向链接面板确认目标。`
+    );
   } else {
     void appLogger.info('ui.wiki_link.unresolved', `target=${target}`);
+    if (window.confirm(`笔记「${target}」不存在，是否创建？`)) {
+      createWikiNote(target);
+    }
+  }
+}
+
+/** 从未解析链接创建同名笔记（写入 Vault 当前目录根 notes/ 下）。 */
+async function createWikiNote(title: string) {
+  if (!noteStore.vaultRoot) return;
+  const id = crypto.randomUUID();
+  const relPath = `notes/${slugifyTitle(title) || id}.md`;
+  try {
+    await vaultService.createNote(relPath, `# ${title}\n\n`);
+    noteStore.addNote({
+      id,
+      title,
+      content: `# ${title}\n\n`,
+      source: { kind: 'vault', path: relPath },
+      folderId: null,
+      tags: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      wordCount: countMarkdownCharacters(title),
+      isFavorite: false,
+    });
+    noteStore.setActiveNote(id);
+    await appLogger.info('ui.wiki_link.created', `path=${relPath}`);
+  } catch (error) {
+    await appLogger.error('ui.wiki_link.create_failed', error);
+  }
+}
+
+/** 重命名当前笔记：预览受影响链接 → 确认 → 备份 → 改写 → 重命名文件。 */
+async function renameActiveNote() {
+  const note = noteStore.getActiveNote();
+  if (!note || note.source?.kind !== 'vault' || !noteStore.vaultRoot) {
+    window.alert('请先在 Vault 中选择要重命名的笔记。');
+    return;
+  }
+  const fromPath = note.source.path;
+  const newTitle = window.prompt('新的笔记标题：', note.title);
+  if (!newTitle || newTitle.trim() === '' || newTitle.trim() === note.title) return;
+  const slug = slugifyTitle(newTitle.trim());
+  if (!slug) {
+    window.alert('无法从标题生成合法文件名。');
+    return;
+  }
+
+  const dir = fromPath.includes('/') ? fromPath.slice(0, fromPath.lastIndexOf('/')) : '';
+  const toPath = dir ? `${dir}/${slug}.md` : `${slug}.md`;
+  if (toPath === fromPath) return;
+  if (noteIndex.value.byPath.has(toPath)) {
+    window.alert(`已存在同名文件 ${toPath}，请换一个标题。`);
+    return;
+  }
+
+  const affected = noteIndex.value.backlinks.get(fromPath) ?? [];
+  const affectedList = affected.length
+    ? `\n\n以下 ${affected.length} 个笔记中的链接会被更新：\n${affected.join('\n')}`
+    : '\n\n没有其他笔记引用它。';
+  const backupNote = `.mdapp/backups/ 中会保留每个被改写文件的原始副本。`;
+  if (!window.confirm(`确定把 ${fromPath} 重命名为 ${toPath} 吗？${affectedList}\n\n${backupNote}`)) {
+    void appLogger.info('ui.rename.cancelled', fromPath);
+    return;
+  }
+
+  try {
+    // 1. Backup every file we are about to rewrite (report-only policy).
+    for (const path of affected) {
+      const target = noteIndex.value.byPath.get(path);
+      if (!target) continue;
+      const backupPath = `.mdapp/backups/${Date.now()}-${path.replace(/\//g, '_')}`;
+      await vaultService.writeFile(backupPath, target.content);
+    }
+    // 2. Rewrite links in affected notes.
+    for (const path of affected) {
+      const target = noteIndex.value.byPath.get(path);
+      if (!target) continue;
+      const rewritten = rewriteLinksAfterRename(target.content, fromPath, note.title, toPath);
+      if (rewritten !== target.content) {
+        await vaultService.writeFile(path, rewritten);
+        noteStore.updateNote(target.id, {
+          content: rewritten,
+          tags: extractFromContent(rewritten).tags,
+        });
+      }
+    }
+    // 3. Rename the file itself.
+    await vaultService.renameFile(fromPath, toPath);
+    noteStore.updateNote(note.id, {
+      title: newTitle.trim(),
+      source: { kind: 'vault', path: toPath },
+    });
+    noteStore.activeNoteId = note.id;
+    await refreshVaultList();
+    await appLogger.info(
+      'ui.rename.completed',
+      `from=${fromPath} to=${toPath} affected=${affected.length}`
+    );
+  } catch (error) {
+    await appLogger.error('ui.rename.failed', error);
+    window.alert(`重命名失败：${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -524,6 +634,7 @@ onBeforeUnmount(() => {
       @open-data-settings="showDataSettings = true"
       @open-settings="showSettings = true"
       @set-view-mode="(mode) => themeStore.setViewMode(mode)"
+      @rename-note="renameActiveNote"
     />
     <SettingsDialog v-if="showSettings" @close="showSettings = false" />
     <SyncPanel v-model:open="showSync" />

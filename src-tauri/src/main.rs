@@ -986,6 +986,10 @@ fn is_filtered_path(relative: &str) -> bool {
     if relative.starts_with("imported/.reverted-") {
         return true;
     }
+    // Rename / link-rewrite backups written by the app (Phase 3).
+    if relative.starts_with(".mdapp/") {
+        return true;
+    }
     false
 }
 
@@ -1886,8 +1890,16 @@ mod tests {
         fs::create_dir_all(&reverted_dir).unwrap();
         let reverted_file = reverted_dir.join("old.md");
         fs::write(&reverted_file, "old").unwrap();
+        let mdapp_backup = dir.join(".mdapp/backups/2026-rename-old.md");
+        fs::create_dir_all(mdapp_backup.parent().unwrap()).unwrap();
+        fs::write(&mdapp_backup, "old").unwrap();
 
-        for noise in [backup.as_path(), log.as_path(), reverted_file.as_path()] {
+        for noise in [
+            backup.as_path(),
+            log.as_path(),
+            reverted_file.as_path(),
+            mdapp_backup.as_path(),
+        ] {
             let payload = classify_watcher_event(
                 &dir,
                 noise,
