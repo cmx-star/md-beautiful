@@ -5,6 +5,7 @@ import {
   Cloud,
   Columns2,
   Database,
+  FileDown,
   FileInput,
   FilePlus2,
   FolderOpen,
@@ -40,6 +41,7 @@ const emit = defineEmits<{
   'open-settings': [];
   'set-view-mode': [mode: ViewMode];
   'rename-note': [];
+  export: [];
 }>();
 
 const query = shallowRef('');

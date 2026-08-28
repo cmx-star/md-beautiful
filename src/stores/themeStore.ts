@@ -28,6 +28,8 @@ export const useThemeStore = defineStore('theme', {
     highlightDark: DEFAULT_HIGHLIGHT_CONFIG,
     /** Phase 2 — 快捷键自定义（id → 覆盖键位）。 */
     shortcutOverrides: {} as ShortcutOverrides,
+    /** Phase 5 — 用户自定义 CSS，作用于预览与导出。 */
+    userCss: '' as string,
   }),
   actions: {
     toggleTheme() {
@@ -125,6 +127,7 @@ export const useThemeStore = defineStore('theme', {
           }
           if (typeof s.scrollSync === 'boolean') this.scrollSync = s.scrollSync;
           if (typeof s.hideMarks === 'boolean') this.hideMarks = s.hideMarks;
+          if (typeof s.userCss === 'string') this.userCss = s.userCss;
           if (isHighlightConfig(s.highlightLight)) this.highlightLight = s.highlightLight;
           if (isHighlightConfig(s.highlightDark)) this.highlightDark = s.highlightDark;
           if (
@@ -151,6 +154,7 @@ export const useThemeStore = defineStore('theme', {
           viewMode: this.viewMode,
           scrollSync: this.scrollSync,
           hideMarks: this.hideMarks,
+          userCss: this.userCss,
           highlightLight: this.highlightLight,
           highlightDark: this.highlightDark,
           shortcutOverrides: this.shortcutOverrides,

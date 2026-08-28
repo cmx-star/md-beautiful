@@ -1,6 +1,7 @@
 // Tauri 2 backend — Markdown Beautiful
 // Handles: file I/O (Vault-bounded), remote sync, and local diagnostics
 
+mod export_service;
 mod migration_helpers;
 mod sync_backend;
 
@@ -579,9 +580,7 @@ fn sync_apply_action(
 }
 
 #[tauri::command]
-fn sync_load_baseline(
-    app: tauri::AppHandle,
-) -> Result<HashMap<String, BaselineEntry>, String> {
+fn sync_load_baseline(app: tauri::AppHandle) -> Result<HashMap<String, BaselineEntry>, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(sync_backend::sync_load_baseline(&dir))
 }
@@ -597,6 +596,69 @@ fn sync_save_baseline(
     sync_backend::sync_replace_baseline(&state, baseline.clone());
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     sync_backend::sync_save_baseline(&dir, baseline)
+}
+
+// ── Export service commands (Phase 5) ─────────────────────────────────────────
+
+#[tauri::command]
+fn export_detect_pandoc() -> Option<String> {
+    export_service::detect_pandoc()
+}
+
+#[tauri::command]
+fn export_document(
+    state: tauri::State<'_, Mutex<VaultState>>,
+    logger: tauri::State<'_, AppLogger>,
+    format: String,
+    title: String,
+    markdown: String,
+    body_html: Option<String>,
+    user_css: Option<String>,
+    target_path: String,
+    resources: Vec<String>,
+) -> Result<export_service::ExportReport, String> {
+    // Verify referenced attachments before writing anything: a missing
+    // resource must abort the export, not silently produce a broken file.
+    let mut missing: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    {
+        let st = state.lock().unwrap();
+        if st.root_path().is_some() {
+            for res in &resources {
+                match st.resolve(res) {
+                    Ok(path) => {
+                        if !path.exists() {
+                            missing.push(res.clone());
+                        }
+                    }
+                    Err(_) => missing.push(res.clone()),
+                }
+            }
+        } else if !resources.is_empty() {
+            warnings.push("Vault 未打开，无法校验附件资源。".to_string());
+        }
+    }
+
+    let target = PathBuf::from(&target_path);
+    let report = export_service::export_document(
+        &format,
+        &title,
+        &markdown,
+        body_html.as_deref(),
+        user_css.as_deref(),
+        &target,
+        missing,
+        warnings,
+    )?;
+    logger.log(
+        "INFO",
+        "export.completed",
+        &format!(
+            "format={} engine={} size={} path={}",
+            report.format, report.engine, report.size, report.target_path
+        ),
+    )?;
+    Ok(report)
 }
 
 /// Open a Vault: set the root directory and scan for `.md` files.
@@ -1705,6 +1767,9 @@ fn main() {
             sync_apply_action,
             sync_load_baseline,
             sync_save_baseline,
+            // Export service
+            export_detect_pandoc,
+            export_document,
             // GitLab
             test_gitlab,
             gitlab_list_files,

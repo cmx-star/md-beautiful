@@ -17,6 +17,7 @@ import { createTauriVaultAdapter } from '@/services/vaultAdapter';
 import { clearDraft, listRecoverableDrafts } from '@/services/draftService';
 import DataSettings from '@/components/Settings/DataSettings.vue';
 import SettingsDialog from '@/components/SettingsDialog.vue';
+import ExportDialog from '@/components/ExportDialog.vue';
 import Sidebar from '@/components/Sidebar.vue';
 import Toolbar from '@/components/Toolbar.vue';
 import EditorPane from '@/components/EditorPane.vue';
@@ -35,6 +36,7 @@ const showPalette = shallowRef(false);
 const showSync = shallowRef(false);
 const showDataSettings = shallowRef(false);
 const showSettings = shallowRef(false);
+const showExport = shallowRef(false);
 const editorScrollRatio = ref(0);
 const draftRecoveryPrompt = ref<Array<{ noteId: string; ageMs: number }>>([]);
 const vaultAdapter = shallowRef(createTauriVaultAdapter());
@@ -524,9 +526,7 @@ function runShortcutAction(id: string) {
       focusSearch();
       break;
     case 'export':
-      // 导出服务在 Phase 5 提供；显式提示避免误导。
-      void appLogger.info('ui.export.unavailable', 'export ships in Phase 5');
-      window.alert('导出功能将在 Phase 5（导出服务）中提供');
+      showExport.value = true;
       break;
     case 'sync':
       void handleSync();
@@ -635,8 +635,10 @@ onBeforeUnmount(() => {
       @open-settings="showSettings = true"
       @set-view-mode="(mode) => themeStore.setViewMode(mode)"
       @rename-note="renameActiveNote"
+      @export="showExport = true"
     />
     <SettingsDialog v-if="showSettings" @close="showSettings = false" />
+    <ExportDialog v-if="showExport" @close="showExport = false" />
     <SyncPanel v-model:open="showSync" />
 
     <section v-if="showDataSettings" class="data-settings-overlay" role="dialog" aria-label="笔记数据设置">

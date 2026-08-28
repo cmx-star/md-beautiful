@@ -7,6 +7,12 @@ import { sanitizeHtml } from '@/utils/sanitize';
 import { resolveAssetPath } from '@/utils/assetPath';
 import { attachmentService } from '@/services/attachmentService';
 import { createDialectSession } from '@/utils/markdownDialect';
+import {
+  formulaCacheKey,
+  mathConfigId,
+  splitMathSegments,
+  type MathDelimiter,
+} from '@/utils/mathSegments';
 import { useNoteIndex } from '@/composables/useNoteIndex';
 import EmptyState from '@/components/EmptyState.vue';
 import mathJaxUrl from 'mathjax/es5/tex-svg.js?url';
@@ -127,6 +133,21 @@ const previewRef = ref<HTMLElement | null>(null);
 let renderVersion = 0;
 let renderDebounce: ReturnType<typeof setTimeout> | null = null;
 
+/** 用户 CSS（Phase 5）：作用于预览，导出走同一份配置。 */
+watch(
+  () => themeStore.userCss,
+  (css) => {
+    let el = document.getElementById('mdapp-user-css') as HTMLStyleElement | null;
+    if (!el) {
+      el = document.createElement('style');
+      el.id = 'mdapp-user-css';
+      document.head.appendChild(el);
+    }
+    el.textContent = css.replace(/<\/style/gi, '<\\/style');
+  },
+  { immediate: true }
+);
+
 /** Phase 2 — 防抖渲染，避免每次击键全量重排。 */
 const RENDER_DEBOUNCE_MS = 180;
 
@@ -144,9 +165,29 @@ watch(
 async function render(nextContent: string) {
   const currentVersion = ++renderVersion;
 
+  // ── Phase 5: segmented rendering with a per-formula SVG cache ──
+  const segments = splitMathSegments(nextContent);
+  const pending: Array<{ key: string; tex: string; display: MathDelimiter }> = [];
+  const slotKeys: string[] = [];
+  const parts: string[] = [];
+  let slotIndex = 0;
+  for (const segment of segments) {
+    if (segment.type === 'text') {
+      parts.push(segment.value);
+      continue;
+    }
+    const display = segment.display ?? 'inline';
+    const key = formulaCacheKey(segment.value, display, MATH_CONFIG_ID);
+    if (!formulaCache.has(key)) pending.push({ key, tex: segment.value, display });
+    parts.push(PLACEHOLDER(slotIndex));
+    slotKeys[slotIndex] = key;
+    slotIndex += 1;
+  }
+  if (pending.length > 0) await renderFormulasOffscreen(pending);
+
   const session = createDialectSession();
   const marked = new Marked({ gfm: true, breaks: true, extensions: session.extensions });
-  const html = (marked.parse(nextContent) as string) ?? '';
+  const html = (marked.parse(parts.join('')) as string) ?? '';
   const safe = sanitizeHtml(html + session.takeFootnoteSection());
 
   await nextTick();
@@ -154,19 +195,78 @@ async function render(nextContent: string) {
 
   getMathJax()?.typesetClear?.([previewRef.value]);
 
-  previewRef.value.innerHTML = safe;
+  let finalHtml = safe;
+  for (let i = 0; i < slotKeys.length; i += 1) {
+    const key = slotKeys[i];
+    const cached = formulaCache.get(key);
+    const fallback = cached === '' ? `<code class="math-error">${escapeHtml(segments.find((s) => s.type === 'math' && formulaCacheKey(s.value, s.display ?? 'inline', MATH_CONFIG_ID) === key)?.value ?? '')}</code>` : '';
+    finalHtml = finalHtml.replaceAll(PLACEHOLDER(i), cached && cached !== '' ? cached : fallback);
+  }
+
+  previewRef.value.innerHTML = finalHtml;
   await nextTick();
   void resolvePreviewImages(previewRef.value, currentVersion);
+}
 
-  const containsMath = /(^|[^\\])\$\$?[\s\S]+?\$\$?|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]/m.test(nextContent);
-  if (!containsMath) return;
+// ── Formula render cache (Phase 5) ──────────────────────────────────────────
 
+const MATH_CONFIG_ID = mathConfigId({
+  inlineMath: [['$', '$'], ['\\(', '\\)']],
+  displayMath: [['$$', '$$'], ['\\[', '\\]']],
+});
+const MAX_FORMULA_CACHE_ENTRIES = 500;
+/** key → rendered SVG markup; '' means the formula failed to render. */
+const formulaCache = new Map<string, string>();
+
+const PLACEHOLDER = (index: number) => `%%MDAPP_MATH_${index}%%`;
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function offscreenContainer(): HTMLElement {
+  let el = document.getElementById('mdapp-math-offscreen');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'mdapp-math-offscreen';
+    el.setAttribute('aria-hidden', 'true');
+    el.style.cssText =
+      'position:absolute;left:-99999px;top:0;width:auto;height:auto;visibility:hidden;';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+/**
+ * Render each uncached formula exactly once in a hidden container.
+ * A failure marks the key as failed ('') so only that formula degrades —
+ * the document body is never affected.
+ */
+async function renderFormulasOffscreen(
+  entries: Array<{ key: string; tex: string; display: MathDelimiter }>
+): Promise<void> {
   try {
     const mathJax = await ensureMathJax();
-    if (currentVersion !== renderVersion || !previewRef.value) return;
-    await mathJax.typesetPromise?.([previewRef.value]);
+    if (formulaCache.size > MAX_FORMULA_CACHE_ENTRIES) formulaCache.clear();
+    const container = offscreenContainer();
+    container.innerHTML = '';
+    entries.forEach((entry, index) => {
+      const slot = document.createElement('span');
+      slot.id = `mdapp-math-slot-${index}`;
+      slot.textContent =
+        entry.display === 'display' ? `$$${entry.tex}$$` : `\\(${entry.tex}\\)`;
+      container.appendChild(slot);
+    });
+    await mathJax.typesetPromise?.([container]);
+    entries.forEach((entry, index) => {
+      const slot = container.querySelector(`#mdapp-math-slot-${index}`);
+      formulaCache.set(entry.key, slot?.innerHTML ?? '');
+    });
+    mathJax.typesetClear?.([container]);
+    container.innerHTML = '';
   } catch (error) {
     console.warn('MathJax render failed', error);
+    for (const entry of entries) formulaCache.set(entry.key, '');
   }
 }
 

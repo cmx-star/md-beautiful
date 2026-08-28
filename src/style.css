@@ -2107,3 +2107,86 @@ input:focus-visible {
   padding: 3px 10px;
   cursor: pointer;
 }
+
+/* ── Phase 5: export dialog ─────────────────────────────────────────────── */
+
+.settings-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.format-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.format-option {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 7px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.format-option.is-active {
+  border-color: var(--accent, #e25555);
+  color: var(--accent, #e25555);
+}
+
+.format-option.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.export-css {
+  margin: 10px 0;
+}
+
+.css-editor {
+  width: 100%;
+  margin-top: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  padding: 8px;
+  resize: vertical;
+}
+
+.export-report {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.export-report p {
+  margin: 2px 0;
+}
+
+.export-actions {
+  margin: 10px 0;
+}
+
+.export-actions .primary {
+  border: 1px solid var(--accent, #e25555);
+  border-radius: 6px;
+  background: var(--accent, #e25555);
+  color: #fff;
+  font-size: 13px;
+  padding: 6px 18px;
+  cursor: pointer;
+}
+
+.export-actions .primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
