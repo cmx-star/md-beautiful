@@ -4,7 +4,9 @@ import { useNoteStore } from '@/stores/noteStore';
 import { useThemeStore } from '@/stores/themeStore';
 import { Codemirror } from 'vue-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
-import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+import { GFM } from '@lezer/markdown';
+import { syntaxHighlighting } from '@codemirror/language';
+import { keymap, type KeyBinding } from '@codemirror/view';
 import { EditorView } from 'codemirror';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { vaultService } from '@/services/vaultService';
@@ -13,19 +15,27 @@ import {
   attachmentMarkdown,
   attachmentService,
 } from '@/services/attachmentService';
+import { EDITOR_COMMANDS } from '@/services/editorCommands';
 import { appLogger } from '@/services/logger';
+import { buildHighlightStyle } from '@/utils/highlightStyle';
+import { createMarkHiding } from '@/extensions/markHiding';
 import { countMarkdownCharacters, deriveNoteTitle } from '@/utils/noteTitle';
 import EmptyState from '@/components/EmptyState.vue';
+import FormatBar from '@/components/FormatBar.vue';
+import PropertiesPanel from '@/components/PropertiesPanel.vue';
 
 const props = defineProps<{
   splitRatio: number;
   isResizing: boolean;
+  /** 阅读模式下编辑器独占整行宽度。 */
+  fullWidth: boolean;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   'resize-start': [];
   'resize-end': [];
   'split-change': [ratio: number];
+  'editor-scroll': [ratio: number];
 }>();
 
 const store = useNoteStore();
@@ -35,8 +45,12 @@ const saving = ref(false);
 const saveError = ref('');
 const content = ref('');
 const dragOver = ref(false);
+const showProperties = ref(false);
 const editorRef = ref<{ view?: EditorView } | null>(null);
 const editorSurface = ref<HTMLElement | null>(null);
+const editorView = computed(
+  () => (editorRef.value?.view as unknown as EditorView | undefined) ?? null
+);
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let unlistenDragDrop: (() => void) | null = null;
 
@@ -173,11 +187,29 @@ function dropInsideEditor(position?: { x: number; y: number }): boolean {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
+// ── Extensions ────────────────────────────────────────────────────────────────
+
+/** Editor-scope keymap built from the shortcut registry (user-overridable). */
+function buildEditorKeymap(): KeyBinding[] {
+  const bindings: KeyBinding[] = [];
+  for (const def of themeStore.shortcuts()) {
+    if (def.scope !== 'editor') continue;
+    const command = EDITOR_COMMANDS[def.id];
+    if (!command) continue;
+    for (const combo of def.keys) {
+      bindings.push({ key: combo, run: command });
+    }
+  }
+  return bindings;
+}
+
 const extensions = computed(() => [
-  markdown(),
-  syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+  markdown({ extensions: [GFM] }),
+  syntaxHighlighting(buildHighlightStyle(themeStore.activeHighlight())),
   EditorView.lineWrapping,
   EditorView.darkTheme.of(themeStore.isDark),
+  keymap.of(buildEditorKeymap()),
+  createMarkHiding(() => themeStore.hideMarks),
   EditorView.domEventHandlers({
     paste: (event: ClipboardEvent) => {
       const files = event.clipboardData?.files;
@@ -185,6 +217,13 @@ const extensions = computed(() => [
       event.preventDefault();
       void pasteAttachmentFiles(files);
       return true;
+    },
+    scroll: (_event: Event, view: EditorView) => {
+      if (!themeStore.scrollSync) return false;
+      const scroller = view.scrollDOM;
+      const max = scroller.scrollHeight - scroller.clientHeight;
+      if (max > 0) emit('editor-scroll', scroller.scrollTop / max);
+      return false;
     },
   }),
 ]);
@@ -220,12 +259,27 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="editor-pane" :style="{ width: `${props.splitRatio}%` }">
+  <section
+    class="editor-pane"
+    :style="{ width: props.fullWidth ? '100%' : `${props.splitRatio}%` }"
+  >
     <div class="pane-caption">
       <span>Markdown</span>
       <span v-if="saving" class="save-state">保存中</span>
       <span v-else-if="saveError" class="save-error" :title="saveError">保存失败</span>
+      <button
+        type="button"
+        class="pane-caption-button"
+        :class="{ 'is-active': showProperties }"
+        aria-label="属性面板"
+        title="Frontmatter 属性"
+        @click="showProperties = !showProperties"
+      >
+        属性
+      </button>
     </div>
+    <FormatBar :view="editorView" />
+    <PropertiesPanel v-model:open="showProperties" />
     <div
       ref="editorSurface"
       class="editor-surface"

@@ -18,6 +18,8 @@
   "dependencies": {
     "@codemirror/lang-markdown": "^6.3.0",
     "@codemirror/language": "^6.10.0",
+    "@lezer/highlight": "^1.0.0",
+    "@lezer/markdown": "^1.0.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-fs": "^2.0.0",

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 import { useNoteStore } from '@/stores/noteStore';
 import { useThemeStore } from '@/stores/themeStore';
 import { useSyncStore } from '@/stores/syncStore';
@@ -7,10 +7,12 @@ import { vaultService, type VaultChangeEvent } from '@/services/vaultService';
 import { documentService } from '@/services/documentService';
 import { appLogger } from '@/services/logger';
 import { countMarkdownCharacters, deriveNoteTitle } from '@/utils/noteTitle';
+import { normalizeCombo } from '@/services/shortcutRegistry';
 import { runMigration, revertMigration } from '@/services/migrationService';
 import { createTauriVaultAdapter } from '@/services/vaultAdapter';
 import { clearDraft, listRecoverableDrafts } from '@/services/draftService';
 import DataSettings from '@/components/Settings/DataSettings.vue';
+import SettingsDialog from '@/components/SettingsDialog.vue';
 import Sidebar from '@/components/Sidebar.vue';
 import Toolbar from '@/components/Toolbar.vue';
 import EditorPane from '@/components/EditorPane.vue';
@@ -28,6 +30,8 @@ const isResizing = shallowRef(false);
 const showPalette = shallowRef(false);
 const showSync = shallowRef(false);
 const showDataSettings = shallowRef(false);
+const showSettings = shallowRef(false);
+const editorScrollRatio = ref(0);
 const draftRecoveryPrompt = ref<Array<{ noteId: string; ageMs: number }>>([]);
 const vaultAdapter = shallowRef(createTauriVaultAdapter());
 const isMacOS = /Macintosh|Mac OS X/i.test(navigator.userAgent);
@@ -333,26 +337,107 @@ function createNote() {
   noteStore.setActiveNote(id);
 }
 
-function handleKeydown(event: KeyboardEvent) {
-  if (!(event.metaKey || event.ctrlKey)) return;
+function focusSearch() {
+  const input = document.getElementById('note-search-input') as HTMLInputElement | null;
+  if (input) {
+    sidebarOpen.value = true;
+    noteStore.sidebarOpen = true;
+    input.focus();
+    input.select();
+  }
+}
 
-  if (event.key.toLowerCase() === 'k') {
-    event.preventDefault();
-    showPalette.value = true;
-  } else if (event.key.toLowerCase() === 'b') {
-    event.preventDefault();
-    toggleSidebar();
-  } else if (event.key.toLowerCase() === 'n') {
-    event.preventDefault();
-    createNote();
-  } else if (event.key.toLowerCase() === 'o') {
-    event.preventDefault();
-    if (event.shiftKey) {
-      openVaultPicker();
-    } else {
-      openMarkdownFile();
+/** 双链跳转：按标题/别名查找笔记并激活；未解析的链接保持只读提示。 */
+function openWikiLink(target: string) {
+  const normalized = target.trim().toLowerCase();
+  const found = noteStore.notes.find(
+    (note) =>
+      note.title.toLowerCase() === normalized ||
+      note.title.replace(/\.md$/, '').toLowerCase() === normalized
+  );
+  if (found) {
+    noteStore.setActiveNote(found.id);
+    void appLogger.info('ui.wiki_link.opened', `target=${target}`);
+  } else {
+    void appLogger.info('ui.wiki_link.unresolved', `target=${target}`);
+  }
+}
+
+// ── 快捷键注册中心（Phase 2）─────────────────────────────────────────────────
+
+const appComboMap = computed(() => {
+  const map = new Map<string, string>();
+  for (const def of themeStore.shortcuts()) {
+    if (def.scope !== 'app') continue;
+    for (const combo of def.keys) {
+      map.set(combo, def.id);
     }
   }
+  return map;
+});
+
+function runShortcutAction(id: string) {
+  switch (id) {
+    case 'palette':
+      showPalette.value = true;
+      break;
+    case 'new-note':
+      createNote();
+      break;
+    case 'open-file':
+      void openMarkdownFile();
+      break;
+    case 'open-vault':
+      void openVaultPicker();
+      break;
+    case 'toggle-sidebar':
+      toggleSidebar();
+      break;
+    case 'toggle-theme':
+      themeStore.toggleTheme();
+      break;
+    case 'view-editor':
+      themeStore.setViewMode('editor');
+      break;
+    case 'view-split':
+      themeStore.setViewMode('split');
+      break;
+    case 'view-preview':
+      themeStore.setViewMode('preview');
+      break;
+    case 'toggle-preview':
+      themeStore.setViewMode(
+        themeStore.viewMode === 'preview' ? 'split' : 'preview'
+      );
+      break;
+    case 'search':
+      focusSearch();
+      break;
+    case 'export':
+      // 导出服务在 Phase 5 提供；显式提示避免误导。
+      void appLogger.info('ui.export.unavailable', 'export ships in Phase 5');
+      window.alert('导出功能将在 Phase 5（导出服务）中提供');
+      break;
+    case 'sync':
+      void handleSync();
+      break;
+    default:
+      break;
+  }
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.defaultPrevented) return; // CodeMirror already handled it
+  if (!(event.metaKey || event.ctrlKey || event.altKey)) return;
+  if (event.key === 'Control' || event.key === 'Meta' || event.key === 'Alt' || event.key === 'Shift') {
+    return;
+  }
+  const combo = normalizeCombo(event);
+  if (!combo) return;
+  const action = appComboMap.value.get(combo);
+  if (!action) return;
+  event.preventDefault();
+  runShortcutAction(action);
 }
 
 onMounted(() => {
@@ -390,27 +475,39 @@ onBeforeUnmount(() => {
         <Toolbar
           :sidebar-open="sidebarOpen"
           :is-dark="themeStore.isDark"
+          :view-mode="themeStore.viewMode"
+          :scroll-sync="themeStore.scrollSync"
           @toggle-sidebar="toggleSidebar"
           @toggle-theme="themeStore.toggleTheme()"
           @sync="handleSync"
           @open-file="openMarkdownFile"
           @open-palette="showPalette = true"
           @open-vault="openVaultPicker"
+          @open-settings="showSettings = true"
+          @set-view-mode="(mode) => themeStore.setViewMode(mode)"
+          @toggle-scroll-sync="themeStore.setScrollSync(!themeStore.scrollSync)"
         />
         <div class="workspace-panes">
           <EditorPane
+            v-if="themeStore.viewMode !== 'preview'"
             :split-ratio="splitRatio"
             :is-resizing="isResizing"
+            :full-width="themeStore.viewMode === 'editor'"
             @resize-start="isResizing = true"
             @resize-end="isResizing = false"
             @split-change="handleSplitChange"
+            @editor-scroll="(ratio) => (editorScrollRatio = ratio)"
           />
           <PreviewPane
+            v-if="themeStore.viewMode !== 'editor'"
             :split-ratio="splitRatio"
             :is-resizing="isResizing"
+            :full-width="themeStore.viewMode === 'preview'"
+            :scroll-ratio="editorScrollRatio"
             @resize-start="isResizing = true"
             @resize-end="isResizing = false"
             @split-change="handleSplitChange"
+            @open-wiki-link="openWikiLink"
           />
         </div>
       </main>
@@ -425,7 +522,10 @@ onBeforeUnmount(() => {
       @toggle-sidebar="toggleSidebar"
       @sync="handleSync"
       @open-data-settings="showDataSettings = true"
+      @open-settings="showSettings = true"
+      @set-view-mode="(mode) => themeStore.setViewMode(mode)"
     />
+    <SettingsDialog v-if="showSettings" @close="showSettings = false" />
     <SyncPanel v-model:open="showSync" />
 
     <section v-if="showDataSettings" class="data-settings-overlay" role="dialog" aria-label="笔记数据设置">

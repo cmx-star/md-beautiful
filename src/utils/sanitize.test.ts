@@ -59,4 +59,18 @@ describe('sanitizeHtml', () => {
     expect(out).toContain('</strong>');
     expect(out).toContain('</p>');
   });
+
+  it('keeps data-* attributes and <section> for dialect output', () => {
+    const out = sanitizeHtml(
+      '<section class="footnotes"><a class="wiki-link" data-wiki-target="note">x</a></section>'
+    );
+    expect(out).toContain('<section class="footnotes">');
+    expect(out).toContain('data-wiki-target="note"');
+  });
+
+  it('still drops script inside <section>', () => {
+    const out = sanitizeHtml('<section><script>alert(1)</script>ok</section>');
+    expect(out).not.toContain('script');
+    expect(out).toContain('ok');
+  });
 });

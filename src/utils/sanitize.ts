@@ -13,7 +13,7 @@ const ALLOWED_TAGS = new Set([
   'strong', 'em', 'del', 'ins', 'mark', 'small',
   'a', 'img',
   'table', 'thead', 'tbody', 'tr', 'th', 'td',
-  'div', 'span',
+  'div', 'span', 'section',
   'input',
   'sup', 'sub',
 ]);
@@ -53,7 +53,9 @@ function sanitizeAttributes(attrs: NamedNodeMap): string {
   for (let i = 0; i < attrs.length; i++) {
     const attr = attrs.item(i)!;
     const name = attr.name.toLowerCase();
-    if (!ALLOWED_ATTRS.has(name)) continue;
+    // data-* attributes are inert and needed for wiki-link click targets.
+    const allowed = ALLOWED_ATTRS.has(name) || name.startsWith('data-');
+    if (!allowed) continue;
     // Strip event handler attributes (on*)
     if (name.startsWith('on')) continue;
     let value = attr.value;

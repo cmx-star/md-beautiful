@@ -2,10 +2,11 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import { useNoteStore } from '@/stores/noteStore';
 import { useThemeStore } from '@/stores/themeStore';
-import { marked } from 'marked';
+import { Marked } from 'marked';
 import { sanitizeHtml } from '@/utils/sanitize';
 import { resolveAssetPath } from '@/utils/assetPath';
 import { attachmentService } from '@/services/attachmentService';
+import { createDialectSession } from '@/utils/markdownDialect';
 import EmptyState from '@/components/EmptyState.vue';
 import mathJaxUrl from 'mathjax/es5/tex-svg.js?url';
 
@@ -83,11 +84,16 @@ function ensureMathJax(): Promise<MathJaxRuntime> {
 const props = defineProps<{
   splitRatio: number;
   isResizing: boolean;
+  /** 阅读模式下预览独占整行宽度。 */
+  fullWidth: boolean;
+  /** 编辑器滚动比例（0-1），用于滚动同步。 */
+  scrollRatio: number;
 }>();
 const emit = defineEmits<{
   'resize-start': [];
   'resize-end': [];
   'split-change': [ratio: number];
+  'open-wiki-link': [target: string];
 }>();
 
 const store = useNoteStore();
@@ -95,6 +101,50 @@ const themeStore = useThemeStore();
 const activeNote = computed(() => store.getActiveNote());
 const previewRef = ref<HTMLElement | null>(null);
 let renderVersion = 0;
+let renderDebounce: ReturnType<typeof setTimeout> | null = null;
+
+/** Phase 2 — 防抖渲染，避免每次击键全量重排。 */
+const RENDER_DEBOUNCE_MS = 180;
+
+watch(
+  () => [activeNote.value?.id, activeNote.value?.content] as const,
+  ([, content]) => {
+    if (renderDebounce) clearTimeout(renderDebounce);
+    renderDebounce = setTimeout(() => {
+      void render(String(content ?? ''));
+    }, RENDER_DEBOUNCE_MS);
+  },
+  { immediate: true }
+);
+
+async function render(nextContent: string) {
+  const currentVersion = ++renderVersion;
+
+  const session = createDialectSession();
+  const marked = new Marked({ gfm: true, breaks: true, extensions: session.extensions });
+  const html = (marked.parse(nextContent) as string) ?? '';
+  const safe = sanitizeHtml(html + session.takeFootnoteSection());
+
+  await nextTick();
+  if (!previewRef.value) return;
+
+  getMathJax()?.typesetClear?.([previewRef.value]);
+
+  previewRef.value.innerHTML = safe;
+  await nextTick();
+  void resolvePreviewImages(previewRef.value, currentVersion);
+
+  const containsMath = /(^|[^\\])\$\$?[\s\S]+?\$\$?|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]/m.test(nextContent);
+  if (!containsMath) return;
+
+  try {
+    const mathJax = await ensureMathJax();
+    if (currentVersion !== renderVersion || !previewRef.value) return;
+    await mathJax.typesetPromise?.([previewRef.value]);
+  } catch (error) {
+    console.warn('MathJax render failed', error);
+  }
+}
 
 /**
  * Phase 1-C: rewrite Vault-relative `assets/…` image references into
@@ -125,38 +175,26 @@ async function resolvePreviewImages(
   }
 }
 
+/** 滚动同步：跟随编辑器比例滚动（0-1）。 */
 watch(
-  () => [activeNote.value?.id, activeNote.value?.content] as const,
-  async ([, content]) => {
-    const currentVersion = ++renderVersion;
-    const nextContent = content ?? '';
-
-    marked.setOptions({ gfm: true, breaks: true });
-    const html = (marked.parse(nextContent) as string) ?? '';
-    const safe = sanitizeHtml(html);
-
-    await nextTick();
-    if (!previewRef.value) return;
-
-    getMathJax()?.typesetClear?.([previewRef.value]);
-
-    previewRef.value.innerHTML = safe;
-    await nextTick();
-    void resolvePreviewImages(previewRef.value, currentVersion);
-
-    const containsMath = /(^|[^\\])\$\$?[\s\S]+?\$\$?|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]/m.test(nextContent);
-    if (!containsMath) return;
-
-    try {
-      const mathJax = await ensureMathJax();
-      if (currentVersion !== renderVersion || !previewRef.value) return;
-      await mathJax.typesetPromise?.([previewRef.value]);
-    } catch (error) {
-      console.warn('MathJax render failed', error);
-    }
-  },
-  { immediate: true }
+  () => props.scrollRatio,
+  (ratio) => {
+    if (!themeStore.scrollSync) return;
+    const container = previewRef.value?.closest('.preview-scroll') as HTMLElement | null;
+    if (!container) return;
+    const max = container.scrollHeight - container.clientHeight;
+    if (max > 0) container.scrollTop = ratio * max;
+  }
 );
+
+/** 双链点击：由 App.vue 解析目标笔记。 */
+function handlePreviewClick(event: MouseEvent) {
+  const target = (event.target as HTMLElement | null)?.closest('.wiki-link');
+  if (!target) return;
+  event.preventDefault();
+  const wikiTarget = target.getAttribute('data-wiki-target');
+  if (wikiTarget) emit('open-wiki-link', wikiTarget);
+}
 
 function startResize(e: MouseEvent) {
   e.preventDefault();
@@ -190,7 +228,10 @@ function formatTime(ts: number): string {
 </script>
 
 <template>
-  <section class="preview-pane" :style="{ width: `${100 - props.splitRatio}%` }">
+  <section
+    class="preview-pane"
+    :style="{ width: props.fullWidth ? '100%' : `${100 - props.splitRatio}%` }"
+  >
     <div class="pane-caption">
       <span>预览</span>
       <span v-if="activeNote">{{ activeNote.wordCount }} 字</span>
@@ -208,6 +249,7 @@ function formatTime(ts: number): string {
           ref="previewRef"
           class="markdown-preview"
           :class="themeStore.isDark ? 'dark' : ''"
+          @click="handlePreviewClick"
         />
       </article>
     </div>

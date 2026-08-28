@@ -2,20 +2,29 @@
 import { computed } from 'vue';
 import { useSyncStore } from '@/stores/syncStore';
 import { useNoteStore } from '@/stores/noteStore';
+import type { ViewMode } from '@/types';
 import {
+  BookOpen,
   Cloud,
+  Columns2,
   Command,
   FileInput,
   FolderOpen,
+  Link2,
+  Link2Off,
   Moon,
   PanelLeft,
+  PencilLine,
   RefreshCw,
+  Settings,
   Sun,
 } from 'lucide-vue-next';
 
 defineProps<{
   sidebarOpen: boolean;
   isDark: boolean;
+  viewMode: ViewMode;
+  scrollSync: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -25,6 +34,9 @@ const emit = defineEmits<{
   openFile: [];
   openPalette: [];
   openVault: [];
+  openSettings: [];
+  setViewMode: [mode: ViewMode];
+  toggleScrollSync: [];
 }>();
 
 const syncStore = useSyncStore();
@@ -37,6 +49,12 @@ const syncBlockedReason = computed(() => {
   return '同步';
 });
 const activeNote = computed(() => noteStore.getActiveNote());
+
+const VIEW_OPTIONS: Array<{ mode: ViewMode; label: string; icon: typeof PencilLine }> = [
+  { mode: 'editor', label: '源码模式 (⌘1)', icon: PencilLine },
+  { mode: 'split', label: '实时预览 (⌘2)', icon: Columns2 },
+  { mode: 'preview', label: '阅读模式 (⌘3)', icon: BookOpen },
+];
 </script>
 
 <template>
@@ -46,7 +64,7 @@ const activeNote = computed(() => noteStore.getActiveNote());
         class="icon-button"
         :class="{ 'is-active': !sidebarOpen }"
         aria-label="切换侧边栏"
-        title="切换侧边栏 (⌘B)"
+        title="切换侧边栏 (⌘\)"
         @click="$emit('toggleSidebar')"
       >
         <PanelLeft :size="18" />
@@ -58,6 +76,29 @@ const activeNote = computed(() => noteStore.getActiveNote());
     </div>
 
     <div class="toolbar-actions">
+      <div class="view-switch" role="group" aria-label="视图模式">
+        <button
+          v-for="option in VIEW_OPTIONS"
+          :key="option.mode"
+          class="icon-button view-option"
+          :class="{ 'is-active': viewMode === option.mode }"
+          :aria-label="option.label"
+          :title="option.label"
+          @click="$emit('setViewMode', option.mode)"
+        >
+          <component :is="option.icon" :size="16" />
+        </button>
+      </div>
+      <button
+        class="icon-button"
+        :class="{ 'is-active': scrollSync }"
+        :aria-label="scrollSync ? '关闭滚动同步' : '开启滚动同步'"
+        :title="scrollSync ? '滚动同步（开）' : '滚动同步（关）'"
+        @click="$emit('toggleScrollSync')"
+      >
+        <Link2 v-if="scrollSync" :size="18" />
+        <Link2Off v-else :size="18" />
+      </button>
       <button
         class="icon-button"
         aria-label="打开 Markdown 文件"
@@ -82,6 +123,14 @@ const activeNote = computed(() => noteStore.getActiveNote());
       >
         <Sun v-if="isDark" :size="18" />
         <Moon v-else :size="18" />
+      </button>
+      <button
+        class="icon-button"
+        aria-label="设置"
+        title="设置（快捷键 / 语法高亮）"
+        @click="$emit('openSettings')"
+      >
+        <Settings :size="18" />
       </button>
       <button
         class="icon-button sync-button"

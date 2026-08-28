@@ -191,7 +191,7 @@ function relativeTime(ts: number): string {
 
       <label class="notes-search">
         <Search :size="15" />
-        <input v-model="searchQuery" type="search" placeholder="搜索笔记" />
+        <input id="note-search-input" v-model="searchQuery" type="search" placeholder="搜索笔记" aria-label="搜索笔记" />
       </label>
 
       <button class="vault-row" @click="emit('open-vault')">

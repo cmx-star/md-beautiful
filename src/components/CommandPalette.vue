@@ -1,16 +1,21 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, shallowRef, type Component } from 'vue';
 import {
+  BookOpen,
   Cloud,
+  Columns2,
   Database,
   FileInput,
   FilePlus2,
   FolderOpen,
   Moon,
   PanelLeft,
+  PencilLine,
   Search,
+  Settings,
   Sun,
 } from 'lucide-vue-next';
+import type { ViewMode } from '@/types';
 
 interface Command {
   id: string;
@@ -31,6 +36,8 @@ const emit = defineEmits<{
   'toggle-sidebar': [];
   sync: [];
   'open-data-settings': [];
+  'open-settings': [];
+  'set-view-mode': [mode: ViewMode];
 }>();
 
 const query = shallowRef('');
@@ -41,8 +48,12 @@ const commands: Command[] = [
   { id: 'new-note', label: '新建笔记', description: '创建一条空白笔记', icon: FilePlus2, shortcut: '⌘N', category: '文件', action: () => emit('new-note') },
   { id: 'open-file', label: '打开 Markdown 文件', description: '打开并编辑单个本地 Markdown 文件', icon: FileInput, shortcut: '⌘O', category: '文件', action: () => emit('open-file') },
   { id: 'open-folder', label: '打开 Vault', description: '载入本地 Markdown 目录', icon: FolderOpen, shortcut: '⌘⇧O', category: '文件', action: () => emit('open-vault') },
+  { id: 'view-editor', label: '源码模式', description: '只显示编辑器', icon: PencilLine, shortcut: '⌘1', category: '视图', action: () => emit('set-view-mode', 'editor') },
+  { id: 'view-split', label: '实时预览', description: '编辑器与预览分栏显示', icon: Columns2, shortcut: '⌘2', category: '视图', action: () => emit('set-view-mode', 'split') },
+  { id: 'view-preview', label: '阅读模式', description: '只显示阅读视图', icon: BookOpen, shortcut: '⌘3', category: '视图', action: () => emit('set-view-mode', 'preview') },
   { id: 'toggle-theme', label: '切换主题', description: '在浅色和深色外观之间切换', icon: Moon, category: '视图', action: () => emit('toggle-theme') },
-  { id: 'toggle-sidebar', label: '切换侧边栏', description: '显示或隐藏导航与笔记列表', icon: PanelLeft, shortcut: '⌘B', category: '视图', action: () => emit('toggle-sidebar') },
+  { id: 'toggle-sidebar', label: '切换侧边栏', description: '显示或隐藏导航与笔记列表', icon: PanelLeft, shortcut: '⌘\\', category: '视图', action: () => emit('toggle-sidebar') },
+  { id: 'settings', label: '设置', description: '自定义快捷键与语法高亮', icon: Settings, category: '视图', action: () => emit('open-settings') },
   { id: 'sync', label: '同步笔记', description: '打开同步设置并执行同步', icon: Cloud, category: '同步', action: () => emit('sync') },
   { id: 'data-settings', label: '笔记数据', description: '管理迁移快照、草稿与迁移日志', icon: Database, category: '数据', action: () => emit('open-data-settings') },
 ];
