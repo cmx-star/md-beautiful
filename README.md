@@ -223,6 +223,21 @@ Vault 目录迁出后的结构：
 - `npm run tauri:build -- --bundles dmg` 在本机完成 release 编译、.app 打包与 ad-hoc 签名；`bundle_dmg.sh`（AppleScript/Finder）在无交互环境下失败，改用 `hdiutil create -format UDZO` 生成 DMG 并验证可挂载、应用完整（见 `src-tauri/target/release/bundle/dmg/`）。
 - 未运行/待补的检查：Windows / Linux 安装验证与签名公证（需对应平台或 CI 矩阵）；桌面端人工回归（中文输入法、大文档压测）按计划 §8 需真机交互验证。
 
+## 📦 版本记录
+
+### 0.2.0（2026-08-28）
+
+- **Phase 1-C**：附件导入——拖拽/粘贴进 `assets/`、相对路径链接、重名自动编号、孤儿附件审计（只报告不删除）、预览内嵌显示。
+- **Phase 2**：编辑命令与格式化工具栏、快捷键注册中心（可自定义 + 冲突拦截）、源码/分栏/阅读三种视图、滚动同步、Frontmatter 属性面板（未知字段原样保留）、可配置语法高亮（浅/深独立）、渐进隐藏标记、Wiki 链接与脚注方言、预览防抖。
+- **Phase 3**：可重建知识索引（出链/反链/未解析链接）、反向链接面板、双链解析与跳转、加权搜索、重命名改写链接（预览 + `.mdapp/backups/` 备份）。
+- **Phase 4**：可靠同步状态机（拉取/条件上传/取消/安全重试/基线推进）、冲突中心（三版本对比 + 保留本地/远端/双方 + 删除确认）、Keychain 凭据、单一同步方式约束。
+- **Phase 5**：导出服务（HTML/TXT/打印 + Pandoc 多格式 + 缺失资源中止 + 原子写入）、公式分段渲染缓存、用户 CSS（预览/导出共用）。
+- **Phase 6**：macOS DMG 构建 + 挂载验证（Windows/Linux 留待 CI 矩阵）。
+
+### 0.1.0（2026-08-26）
+
+- 可交互桌面原型：Phase 0 基线与安全止血、Phase 1-A Pinia 迁出 + 快照回滚、Phase 1-B 外部修改检测。
+
 ## 🗺️ 开发里程碑
 
 详细路线图见 [DEVELOPMENT_PLAN_SUPPLEMENT.md](./DEVELOPMENT_PLAN_SUPPLEMENT.md)

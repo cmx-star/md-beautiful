@@ -1,6 +1,6 @@
 {
   "productName": "Markdown Beautiful",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.mardown-beautiful.app",
   "build": {
     "beforeBuildCommand": "npm run build",

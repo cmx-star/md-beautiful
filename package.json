@@ -1,6 +1,6 @@
 {
   "name": "mardown-beautiful",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A cross-platform Markdown editor inspired by Bear / Notion / Obsidian",
   "type": "module",
   "scripts": {
